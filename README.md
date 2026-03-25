@@ -1,36 +1,93 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# syslog-unifi
+
+Real-time UniFi firewall syslog viewer built with Next.js. Receives syslog messages over UDP/TCP, stores them in SQLite, and displays them in a live-updating web dashboard with advanced filtering and full-text search.
+
+![Next.js](https://img.shields.io/badge/Next.js-16-black)
+![SQLite](https://img.shields.io/badge/SQLite-FTS5-blue)
+![License](https://img.shields.io/badge/License-MIT-green)
+
+## Features
+
+- **Live streaming** — real-time log display via Server-Sent Events
+- **Syslog receiver** — built-in UDP + TCP server (RFC 3164, RFC 5424, UniFi CEF)
+- **SQLite storage** — persistent storage with WAL mode and FTS5 full-text search
+- **Advanced filtering** — filter by action (Allow/Drop/Reject), protocol, source/destination IP and port, firewall rule name
+- **Full-text search** — search across all log messages
+- **Virtual scrolling** — efficient rendering of large log volumes
+- **Color-coded actions** — green (Allow), red (Drop), yellow (Reject)
+- **Pagination** — browse historical logs with server-side pagination
+
+## Prerequisites
+
+- Node.js 20+
+- A UniFi device configured to send syslog to this server (see [Configure UniFi](#configure-unifi))
 
 ## Getting Started
 
-First, run the development server:
+### Install
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+npm install
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+### Configure
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+Copy the example environment file and edit it:
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+```bash
+cp .env.example .env.local
+```
 
-## Learn More
+```env
+# Port for the syslog receiver (UDP + TCP)
+SYSLOG_PORT=5514
+```
 
-To learn more about Next.js, take a look at the following resources:
+### Run
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+```bash
+# Development
+npm run dev
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+# Production
+npm run build
+npm start
+```
 
-## Deploy on Vercel
+Open [http://localhost:3000](http://localhost:3000) to view the dashboard.
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+## Configure UniFi
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+1. Open your UniFi Controller / UniFi OS console
+2. Go to **Settings → System → Remote Logging** (or **SIEM** on newer firmware)
+3. Set the syslog server to the IP address of the machine running this app
+4. Set the port to match `SYSLOG_PORT` (default: `5514`)
+5. Enable firewall logging on the desired rules
+
+## Architecture
+
+```
+UniFi Device ──UDP/TCP──▶ Syslog Server ──▶ SQLite (FTS5)
+                              │
+                              ▼
+                        Next.js API (SSE)
+                              │
+                              ▼
+                        React Dashboard
+```
+
+- **Syslog Server** (`src/lib/syslog-server.ts`) — listens on UDP + TCP, parses multiple syslog formats
+- **Log Store** (`src/lib/log-store.ts`) — manages SQLite persistence, querying, real-time subscriptions
+- **API Routes** (`src/app/api/`) — REST endpoints + SSE streaming
+- **Dashboard** (`src/app/page.tsx`) — live and history modes with virtual scrolling
+
+## Tech Stack
+
+- [Next.js](https://nextjs.org) 16 with React Compiler
+- [better-sqlite3](https://github.com/WiseLibs/better-sqlite3) with FTS5
+- [shadcn/ui](https://ui.shadcn.com) + [Tailwind CSS](https://tailwindcss.com) v4
+- [Lucide](https://lucide.dev) icons
+
+## License
+
+[MIT](LICENSE)

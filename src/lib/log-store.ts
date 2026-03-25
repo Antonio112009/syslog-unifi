@@ -1,6 +1,5 @@
 import crypto from "crypto";
 import { getDb, migrateFromJson } from "./db";
-import type { UniFiLogEntry } from "./unifi-client";
 import type { SyslogMessage } from "./syslog-server";
 
 export interface SyslogEntry {
@@ -24,7 +23,7 @@ export interface PaginatedLogs {
   totalPages: number;
 }
 
-let listeners: Set<(entry: SyslogEntry) => void> = new Set();
+const listeners: Set<(entry: SyslogEntry) => void> = new Set();
 
 function rowToEntry(row: Record<string, unknown>): SyslogEntry {
   return {
@@ -41,17 +40,6 @@ function rowToEntry(row: Record<string, unknown>): SyslogEntry {
   };
 }
 
-function guessSeverity(key: string, msg: string): string {
-  const lower = (key + " " + msg).toLowerCase();
-  if (lower.includes("error") || lower.includes("fail")) return "error";
-  if (lower.includes("warn")) return "warning";
-  if (lower.includes("crit")) return "critical";
-  if (lower.includes("alert") || lower.includes("alarm")) return "alert";
-  if (lower.includes("disconnect") || lower.includes("lost")) return "warning";
-  if (lower.includes("connect") || lower.includes("success")) return "info";
-  return "notice";
-}
-
 /** Escape user input for FTS5 MATCH queries */
 function ftsEscape(query: string): string {
   return '"' + query.replace(/"/g, '""') + '"';
@@ -60,50 +48,6 @@ function ftsEscape(query: string): string {
 export function loadLogs(): void {
   getDb(); // Ensure DB is initialized
   migrateFromJson();
-}
-
-export function ingestUniFiLogs(unifiLogs: UniFiLogEntry[]): number {
-  const db = getDb();
-  let newCount = 0;
-
-  const sorted = [...unifiLogs].sort((a, b) => a.time - b.time);
-
-  const insert = db.prepare(`
-    INSERT OR IGNORE INTO logs (id, timestamp, facility, severity, host, message, raw, received_at, subsystem, key)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `);
-
-  const tx = db.transaction(() => {
-    for (const log of sorted) {
-      const entry: SyslogEntry = {
-        id: log._id,
-        timestamp: log.datetime || new Date(log.time).toISOString(),
-        facility: log.subsystem || "system",
-        severity: guessSeverity(log.key || "", log.msg || ""),
-        host: log.hostname || log.ip || "controller",
-        message: log.msg || log.key || "",
-        raw: JSON.stringify(log),
-        receivedAt: new Date().toISOString(),
-        subsystem: log.subsystem || "",
-        key: log.key || "",
-      };
-
-      const result = insert.run(
-        entry.id, entry.timestamp, entry.facility, entry.severity, entry.host,
-        entry.message, entry.raw, entry.receivedAt, entry.subsystem, entry.key
-      );
-
-      if (result.changes > 0) {
-        newCount++;
-        for (const listener of listeners) {
-          listener(entry);
-        }
-      }
-    }
-  });
-
-  tx();
-  return newCount;
 }
 
 export function ingestSyslogMessage(msg: SyslogMessage): number {
@@ -142,13 +86,26 @@ export function ingestSyslogMessage(msg: SyslogMessage): number {
   return 0;
 }
 
+export interface FilterOptions {
+  action?: string;
+  proto?: string;
+  srcIp?: string;
+  srcPort?: string;
+  dstIp?: string;
+  dstPort?: string;
+  rule?: string;
+  ipMatch?: "and" | "or";
+}
+
 /** Get logs with server-side pagination, filtering, and FTS search */
 export function getLogs(
   page = 1,
   pageSize = 100,
   severity?: string,
   search?: string,
-  source?: string
+  source?: string,
+  firewallOnly?: boolean,
+  filterOptions?: FilterOptions
 ): PaginatedLogs {
   const db = getDb();
   const conditions: string[] = [];
@@ -170,6 +127,76 @@ export function getLogs(
   if (source) {
     conditions.push("logs.host LIKE ?");
     params.push(`%${source}%`);
+  }
+
+  if (firewallOnly) {
+    conditions.push("(logs.message LIKE '[%-A-%]%' OR logs.message LIKE '[%-D-%]%' OR logs.message LIKE '[%-R-%]%')");
+  }
+
+  // Firewall field filters
+  if (filterOptions) {
+    if (filterOptions.action) {
+      const actionCode: Record<string, string> = { Allow: "A", Drop: "D", Reject: "R" };
+      const code = actionCode[filterOptions.action];
+      if (code) {
+        conditions.push("logs.message LIKE ?");
+        params.push(`[%-${code}-%]%`);
+      }
+    }
+
+    if (filterOptions.proto) {
+      conditions.push("logs.message LIKE ?");
+      params.push(`%PROTO=${filterOptions.proto}%`);
+    }
+
+    if (filterOptions.rule) {
+      conditions.push("(logs.message LIKE ? OR logs.message LIKE ?)");
+      params.push(`%${filterOptions.rule}%`, `%DESCR="%${filterOptions.rule}%"%`);
+    }
+
+    const hasSrc = !!(filterOptions.srcIp || filterOptions.srcPort);
+    const hasDst = !!(filterOptions.dstIp || filterOptions.dstPort);
+
+    if (hasSrc || hasDst) {
+      const srcParts: string[] = [];
+      const srcParams: unknown[] = [];
+      if (filterOptions.srcIp) {
+        srcParts.push("logs.message LIKE ?");
+        srcParams.push(`%SRC=%${filterOptions.srcIp}%`);
+      }
+      if (filterOptions.srcPort) {
+        srcParts.push("logs.message LIKE ?");
+        srcParams.push(`%SPT=${filterOptions.srcPort} %`);
+      }
+
+      const dstParts: string[] = [];
+      const dstParams: unknown[] = [];
+      if (filterOptions.dstIp) {
+        dstParts.push("logs.message LIKE ?");
+        dstParams.push(`%DST=%${filterOptions.dstIp}%`);
+      }
+      if (filterOptions.dstPort) {
+        dstParts.push("logs.message LIKE ?");
+        dstParams.push(`%DPT=${filterOptions.dstPort} %`);
+      }
+
+      const srcCond = srcParts.length > 0 ? `(${srcParts.join(" AND ")})` : null;
+      const dstCond = dstParts.length > 0 ? `(${dstParts.join(" AND ")})` : null;
+
+      if (filterOptions.ipMatch === "or" && srcCond && dstCond) {
+        conditions.push(`(${srcCond} OR ${dstCond})`);
+        params.push(...srcParams, ...dstParams);
+      } else {
+        if (srcCond) {
+          conditions.push(srcCond);
+          params.push(...srcParams);
+        }
+        if (dstCond) {
+          conditions.push(dstCond);
+          params.push(...dstParams);
+        }
+      }
+    }
   }
 
   const joinClause = usesFts
@@ -206,10 +233,37 @@ export function getRecentLogs(
   limit = 200,
   severity?: string,
   search?: string,
-  source?: string
+  source?: string,
+  firewallOnly?: boolean
 ): SyslogEntry[] {
-  const result = getLogs(1, limit, severity, search, source);
+  const result = getLogs(1, limit, severity, search, source, firewallOnly);
   return result.logs;
+}
+
+/** Get all distinct rule names from firewall log messages */
+export function getDistinctRules(): string[] {
+  const db = getDb();
+  // Grab every distinct message that looks like a firewall log
+  const rows = db
+    .prepare(
+      `SELECT DISTINCT message FROM logs
+       WHERE message LIKE '[%-A-%]%' OR message LIKE '[%-D-%]%' OR message LIKE '[%-R-%]%'`
+    )
+    .all() as { message: string }[];
+
+  const seen = new Set<string>();
+  const descrRe = /DESCR="([^"]+)"/;
+  const ruleRe = /^\[([^\]]+)\]/;
+  for (const { message } of rows) {
+    const dm = descrRe.exec(message);
+    if (dm) {
+      seen.add(dm[1]);
+    } else {
+      const rm = ruleRe.exec(message);
+      if (rm) seen.add(rm[1]);
+    }
+  }
+  return Array.from(seen).sort();
 }
 
 export function clearLogs(): void {
@@ -220,9 +274,4 @@ export function clearLogs(): void {
 export function subscribe(listener: (entry: SyslogEntry) => void): () => void {
   listeners.add(listener);
   return () => listeners.delete(listener);
-}
-
-export function getLogCount(): number {
-  const db = getDb();
-  return (db.prepare("SELECT COUNT(*) as c FROM logs").get() as { c: number }).c;
 }

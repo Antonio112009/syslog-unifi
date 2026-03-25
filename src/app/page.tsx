@@ -1,6 +1,19 @@
 "use client";
 
 import { useEffect, useRef, useState, useCallback, useMemo } from "react";
+import { cn } from "@/lib/utils";
+import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
+import { Input } from "@/components/ui/input";
+import { Separator } from "@/components/ui/separator";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+  DialogDescription,
+} from "@/components/ui/dialog";
 
 interface SyslogEntry {
   id: string;
@@ -23,29 +36,12 @@ interface PaginatedResponse {
   totalPages: number;
 }
 
-interface PollStatus {
-  configured: boolean;
-  polling: boolean;
-  lastPollTime: string | null;
-  lastError: string | null;
-  logCount: number;
-  syslog?: { running: boolean; port: number };
-}
-
-const SEVERITY_COLORS: Record<string, string> = {
-  emergency: "bg-red-900 text-red-100",
-  alert: "bg-red-800 text-red-100",
-  critical: "bg-red-700 text-red-100",
-  error: "bg-red-600 text-white",
-  warning: "bg-yellow-600 text-white",
-  notice: "bg-blue-600 text-white",
-  info: "bg-green-600 text-white",
-  debug: "bg-gray-500 text-white",
-};
-
 const ROW_HEIGHT = 32;
 const OVERSCAN = 10;
 const PAGE_SIZE = 100;
+
+const selectClass =
+  "h-8 w-full rounded-lg border border-input bg-transparent px-2 text-sm outline-none cursor-pointer focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 dark:bg-input/30";
 
 interface ParsedFirewall {
   rule: string;
@@ -85,10 +81,6 @@ function parseFirewallMessage(msg: string): ParsedFirewall | null {
   };
 }
 
-function isFirewallLog(log: SyslogEntry): boolean {
-  return /^\[\w+-(A|D|R)-\d+\]/.test(log.message);
-}
-
 function Spinner({ className = "" }: { className?: string }) {
   return (
     <svg
@@ -103,51 +95,35 @@ function Spinner({ className = "" }: { className?: string }) {
   );
 }
 
-function LogRow({ log, isExpanded, onToggle }: { log: SyslogEntry; isExpanded: boolean; onToggle: () => void }) {
-  return (
-    <div
-      className="flex items-start border-b border-gray-800/50 hover:bg-gray-900/50 cursor-pointer font-mono text-sm"
-      style={{ minHeight: ROW_HEIGHT }}
-      onClick={onToggle}
-    >
-      <div className="px-3 py-1.5 text-gray-400 whitespace-nowrap w-44 shrink-0">
-        {log.timestamp.slice(0, 19).replace("T", " ")}
-      </div>
-      <div className="px-3 py-1.5 w-24 shrink-0">
-        <span className={`px-2 py-0.5 rounded text-xs font-medium ${SEVERITY_COLORS[log.severity] || "bg-gray-600 text-white"}`}>
-          {log.severity}
-        </span>
-      </div>
-      <div className="px-3 py-1.5 text-purple-400 w-28 shrink-0 truncate">{log.subsystem}</div>
-      <div className="px-3 py-1.5 text-blue-400 w-40 shrink-0 truncate">{log.host}</div>
-      <div className="px-3 py-1.5 flex-1 min-w-0">
-        {isExpanded ? (
-          <pre className="whitespace-pre-wrap break-all text-xs text-gray-300">{log.raw}</pre>
-        ) : (
-          <span className="truncate block">{log.message.slice(0, 200)}</span>
-        )}
-      </div>
-    </div>
-  );
-}
-
 const ACTION_COLORS: Record<string, string> = {
   Allow: "text-green-400",
   Drop: "text-red-400",
   Reject: "text-yellow-400",
 };
 
-function FirewallRow({ log, fw, isExpanded, onToggle }: { log: SyslogEntry; fw: ParsedFirewall; isExpanded: boolean; onToggle: () => void }) {
+function FirewallRow({
+  log,
+  fw,
+  isExpanded,
+  onToggle,
+}: {
+  log: SyslogEntry;
+  fw: ParsedFirewall;
+  isExpanded: boolean;
+  onToggle: () => void;
+}) {
   return (
     <div
-      className="flex items-start border-b border-gray-800/50 hover:bg-gray-900/50 cursor-pointer font-mono text-sm"
+      className="flex items-start border-b border-border/50 hover:bg-muted/30 cursor-pointer font-mono text-sm"
       style={{ minHeight: ROW_HEIGHT }}
       onClick={onToggle}
     >
-      <div className="px-3 py-1.5 text-gray-400 whitespace-nowrap w-24 shrink-0">
+      <div className="px-3 py-1.5 text-muted-foreground whitespace-nowrap w-24 shrink-0">
         {log.timestamp.slice(11, 19)}
       </div>
-      <div className={`px-3 py-1.5 w-20 shrink-0 font-medium ${ACTION_COLORS[fw.action] || "text-gray-300"}`}>
+      <div
+        className={`px-3 py-1.5 w-20 shrink-0 font-medium ${ACTION_COLORS[fw.action] || "text-foreground"}`}
+      >
         {fw.action}
       </div>
       <div className="px-3 py-1.5 text-cyan-400 w-72 shrink-0 truncate" title={fw.rule}>
@@ -155,109 +131,312 @@ function FirewallRow({ log, fw, isExpanded, onToggle }: { log: SyslogEntry; fw: 
       </div>
       <div className="px-3 py-1.5 text-purple-400 w-20 shrink-0">{fw.iface}</div>
       <div className="px-3 py-1.5 text-blue-300 w-20 shrink-0">{fw.proto}</div>
-      <div className="px-3 py-1.5 w-48 shrink-0 truncate" title={fw.src}>
-        {fw.src}{fw.spt ? `:${fw.spt}` : ""}
+      <div className="px-3 py-1.5 w-48 shrink-0 truncate" title={`${fw.src}:${fw.spt}`}>
+        {fw.src}
+        <span className="text-muted-foreground">{fw.spt ? `:${fw.spt}` : ""}</span>
       </div>
-      <div className="px-3 py-1.5 w-48 shrink-0 truncate" title={fw.dst}>
-        {fw.dst}{fw.dpt ? `:${fw.dpt}` : ""}
+      <div className="px-3 py-1.5 w-48 shrink-0 truncate" title={`${fw.dst}:${fw.dpt}`}>
+        {fw.dst}
+        <span className="text-muted-foreground">{fw.dpt ? `:${fw.dpt}` : ""}</span>
       </div>
-      <div className="px-3 py-1.5 text-gray-500 w-16 shrink-0">{fw.len}</div>
       <div className="px-2 py-1.5 flex-1 min-w-0">
         {isExpanded ? (
-          <pre className="whitespace-pre-wrap break-all text-xs text-gray-300">{log.raw}</pre>
+          <pre className="whitespace-pre-wrap break-all text-xs text-muted-foreground">
+            {log.raw}
+          </pre>
         ) : (
-          <span className="truncate block text-gray-500">{fw.rule}</span>
+          <span className="truncate block text-muted-foreground">{fw.rule}</span>
         )}
       </div>
     </div>
   );
 }
 
-function PaginationBar({
-  page,
-  totalPages,
-  total,
-  onPageChange,
-  isLive,
-  onGoLive,
+interface Filters {
+  action: string;
+  proto: string;
+  srcIp: string;
+  srcPort: string;
+  dstIp: string;
+  dstPort: string;
+  rule: string;
+  search: string;
+  ipMatch: "and" | "or";
+}
+
+const emptyFilters: Filters = {
+  action: "",
+  proto: "",
+  srcIp: "",
+  srcPort: "",
+  dstIp: "",
+  dstPort: "",
+  rule: "",
+  search: "",
+  ipMatch: "and",
+};
+
+function FilterDialog({
+  filters,
+  onChange,
+  activeCount,
+  onClear,
+  ruleOptions,
 }: {
-  page: number;
-  totalPages: number;
-  total: number;
-  onPageChange: (p: number) => void;
-  isLive: boolean;
-  onGoLive: () => void;
+  filters: Filters;
+  onChange: (f: Filters) => void;
+  activeCount: number;
+  onClear: () => void;
+  ruleOptions: string[];
 }) {
-  // Show a window of page numbers around the current page
-  const pages: (number | "...")[] = [];
-  const window = 2;
-  for (let i = 1; i <= totalPages; i++) {
-    if (i === 1 || i === totalPages || (i >= page - window && i <= page + window)) {
-      pages.push(i);
-    } else if (pages.length > 0 && pages[pages.length - 1] !== "...") {
-      pages.push("...");
-    }
-  }
+  const [local, setLocal] = useState(filters);
+  const [open, setOpen] = useState(false);
+  const [ruleDropdownOpen, setRuleDropdownOpen] = useState(false);
+  const ruleRef = useRef<HTMLDivElement>(null);
+
+  const handleOpenChange = (nextOpen: boolean) => {
+    if (nextOpen) setLocal(filters);
+    setOpen(nextOpen);
+  };
+
+  const apply = () => {
+    onChange(local);
+    setOpen(false);
+  };
+
+  const clear = () => {
+    setLocal(emptyFilters);
+    onChange(emptyFilters);
+    onClear();
+    setOpen(false);
+  };
+
+  const set = (key: keyof Filters, value: string) =>
+    setLocal((prev) => ({ ...prev, [key]: value }));
 
   return (
-    <div className="flex items-center justify-between px-4 py-2 bg-gray-900/80 border-t border-gray-800 text-sm shrink-0">
-      <div className="text-gray-400">
-        {total.toLocaleString()} total entries
-        {!isLive && ` · Page ${page} of ${totalPages}`}
-      </div>
-      <div className="flex items-center gap-2">
-        {!isLive && (
-          <>
-            <button
-              onClick={() => onPageChange(page + 1)}
-              disabled={page >= totalPages}
-              className="px-2 py-1 text-xs bg-gray-800 hover:bg-gray-700 disabled:opacity-40 disabled:cursor-not-allowed rounded transition-colors"
-            >
-              ← Older
-            </button>
-            {pages.map((p, i) =>
-              p === "..." ? (
-                <span key={`e${i}`} className="text-gray-500 px-1">…</span>
-              ) : (
-                <button
-                  key={p}
-                  onClick={() => onPageChange(p as number)}
-                  className={`px-2 py-1 text-xs rounded transition-colors ${
-                    p === page
-                      ? "bg-blue-600 text-white"
-                      : "bg-gray-800 hover:bg-gray-700 text-gray-300"
-                  }`}
-                >
-                  {p}
-                </button>
-              )
-            )}
-            <button
-              onClick={() => onPageChange(page - 1)}
-              disabled={page <= 1}
-              className="px-2 py-1 text-xs bg-gray-800 hover:bg-gray-700 disabled:opacity-40 disabled:cursor-not-allowed rounded transition-colors"
-            >
-              Newer →
-            </button>
-          </>
-        )}
-        <button
-          onClick={onGoLive}
-          className={`px-3 py-1 text-xs rounded transition-colors ${
-            isLive
-              ? "bg-green-700 text-green-100 cursor-default"
-              : "bg-green-800 hover:bg-green-700 text-green-200"
-          }`}
+    <Dialog open={open} onOpenChange={handleOpenChange}>
+      <DialogTrigger render={<Button variant="outline" size="sm" />}>
+        <svg
+          xmlns="http://www.w3.org/2000/svg"
+          className="size-4"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2"
+          strokeLinecap="round"
+          strokeLinejoin="round"
         >
-          {isLive ? "● Live" : "Go Live"}
-        </button>
-      </div>
-    </div>
+          <polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3" />
+        </svg>
+        Filters
+        {activeCount > 0 && (
+          <Badge variant="secondary" className="ml-1 h-4 text-[10px] px-1.5">
+            {activeCount}
+          </Badge>
+        )}
+      </DialogTrigger>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>Filter Firewall Logs</DialogTitle>
+          <DialogDescription>
+            Narrow down firewall entries by action, protocol, addresses, and ports.
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="grid gap-4 py-2">
+          <div className="grid grid-cols-2 gap-3">
+            <div className="space-y-1.5">
+              <label className="text-xs font-medium text-muted-foreground">Action</label>
+              <select
+                value={local.action}
+                onChange={(e) => set("action", e.target.value)}
+                className={selectClass}
+              >
+                <option value="">All</option>
+                <option value="Allow">Allow</option>
+                <option value="Drop">Drop</option>
+                <option value="Reject">Reject</option>
+              </select>
+            </div>
+            <div className="space-y-1.5">
+              <label className="text-xs font-medium text-muted-foreground">Protocol</label>
+              <select
+                value={local.proto}
+                onChange={(e) => set("proto", e.target.value)}
+                className={selectClass}
+              >
+                <option value="">All</option>
+                <option value="TCP">TCP</option>
+                <option value="UDP">UDP</option>
+                <option value="ICMP">ICMP</option>
+              </select>
+            </div>
+          </div>
+
+          <div className="rounded-lg border border-border/60 bg-muted/20 p-3 space-y-3">
+            <div className="space-y-1.5">
+              <label className="text-xs font-medium text-muted-foreground">Source</label>
+              <div className="grid grid-cols-[1fr_100px] gap-2">
+                <Input
+                  placeholder="e.g. 192.168.2 or .2.11"
+                  value={local.srcIp}
+                  onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+                    set("srcIp", e.target.value)
+                  }
+                  autoComplete="off"
+                  data-1p-ignore
+                  data-lpignore="true"
+                />
+                <Input
+                  placeholder="Port"
+                  value={local.srcPort}
+                  onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+                    set("srcPort", e.target.value)
+                  }
+                  autoComplete="off"
+                  data-1p-ignore
+                  data-lpignore="true"
+                />
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <div className="flex-1 h-px bg-border/60" />
+              <div className="flex rounded-md border border-input overflow-hidden text-xs font-medium">
+                <button
+                  type="button"
+                  className={cn(
+                    "px-3 py-1 transition-colors",
+                    local.ipMatch === "and"
+                      ? "bg-primary text-primary-foreground"
+                      : "bg-transparent text-muted-foreground hover:text-foreground",
+                  )}
+                  onClick={() => set("ipMatch", "and")}
+                >
+                  AND
+                </button>
+                <button
+                  type="button"
+                  className={cn(
+                    "px-3 py-1 transition-colors border-l border-input",
+                    local.ipMatch === "or"
+                      ? "bg-primary text-primary-foreground"
+                      : "bg-transparent text-muted-foreground hover:text-foreground",
+                  )}
+                  onClick={() => set("ipMatch", "or")}
+                >
+                  OR
+                </button>
+              </div>
+              <div className="flex-1 h-px bg-border/60" />
+            </div>
+
+            <div className="space-y-1.5">
+              <label className="text-xs font-medium text-muted-foreground">Destination</label>
+              <div className="grid grid-cols-[1fr_100px] gap-2">
+                <Input
+                  placeholder="e.g. 192.168.2 or .2.11"
+                  value={local.dstIp}
+                  onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+                    set("dstIp", e.target.value)
+                  }
+                  autoComplete="off"
+                  data-1p-ignore
+                  data-lpignore="true"
+                />
+                <Input
+                  placeholder="Port"
+                  value={local.dstPort}
+                  onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+                    set("dstPort", e.target.value)
+                  }
+                  autoComplete="off"
+                  data-1p-ignore
+                  data-lpignore="true"
+                />
+              </div>
+            </div>
+          </div>
+
+          <div className="space-y-1.5">
+            <label className="text-xs font-medium text-muted-foreground">Rule</label>
+            <div className="relative" ref={ruleRef}>
+              <Input
+                placeholder="e.g. LAN_IN, WAN_OUT..."
+                value={local.rule}
+                onChange={(e: React.ChangeEvent<HTMLInputElement>) => {
+                  set("rule", e.target.value);
+                  setRuleDropdownOpen(true);
+                }}
+                onFocus={() => setRuleDropdownOpen(true)}
+                onBlur={(e: React.FocusEvent) => {
+                  if (!ruleRef.current?.contains(e.relatedTarget as Node)) {
+                    setRuleDropdownOpen(false);
+                  }
+                }}
+                autoComplete="off"
+                data-1p-ignore
+                data-lpignore="true"
+              />
+              {ruleDropdownOpen && (() => {
+                const filtered = ruleOptions.filter((r) =>
+                  !local.rule || r.toLowerCase().includes(local.rule.toLowerCase())
+                );
+                if (filtered.length === 0) return null;
+                return (
+                  <div className="absolute z-50 mt-1 w-full max-h-48 overflow-y-auto rounded-md border border-border bg-popover py-1 shadow-md">
+                    {filtered.map((r) => (
+                      <button
+                        key={r}
+                        type="button"
+                        className="w-full px-3 py-1.5 text-left text-sm hover:bg-accent hover:text-accent-foreground cursor-pointer truncate"
+                        onMouseDown={(e) => e.preventDefault()}
+                        onClick={() => {
+                          set("rule", r);
+                          setRuleDropdownOpen(false);
+                        }}
+                      >
+                        {r}
+                      </button>
+                    ))}
+                  </div>
+                );
+              })()}
+            </div>
+          </div>
+
+          <div className="space-y-1.5">
+            <label className="text-xs font-medium text-muted-foreground">
+              Search (message)
+            </label>
+            <Input
+              placeholder="e.g. DNS, 443..."
+              value={local.search}
+              onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+                set("search", e.target.value)
+              }
+              autoComplete="off"
+              data-1p-ignore
+              data-lpignore="true"
+            />
+          </div>
+        </div>
+
+        <div className="flex items-center justify-between pt-2">
+          <Button variant="ghost" size="sm" onClick={clear}>
+            Clear all
+          </Button>
+          <Button size="sm" onClick={apply}>
+            Apply filters
+          </Button>
+        </div>
+      </DialogContent>
+    </Dialog>
   );
 }
 
 export default function Home() {
-  // Mode: live (SSE) or history (paginated)
   const [mode, setMode] = useState<"live" | "history">("live");
   const [liveLogs, setLiveLogs] = useState<SyslogEntry[]>([]);
   const [historyLogs, setHistoryLogs] = useState<SyslogEntry[]>([]);
@@ -266,139 +445,105 @@ export default function Home() {
   const [historyTotalPages, setHistoryTotalPages] = useState(1);
   const [historyLoading, setHistoryLoading] = useState(false);
 
-  const [severity, setSeverity] = useState("");
-  const [search, setSearch] = useState("");
+  const [filters, setFilters] = useState<Filters>(emptyFilters);
   const [committedSearch, setCommittedSearch] = useState("");
-  const [sourceFilter, setSourceFilter] = useState("");
-  const [fwIp, setFwIp] = useState("");
-  const [fwIpScope, setFwIpScope] = useState<"either" | "src" | "dst">("either");
   const [autoScroll, setAutoScroll] = useState(true);
   const [connected, setConnected] = useState(false);
   const [expandedId, setExpandedId] = useState<string | null>(null);
-  const [pollStatus, setPollStatus] = useState<PollStatus | null>(null);
-  const [isPolling, setIsPolling] = useState(false);
   const [isConnecting, setIsConnecting] = useState(true);
-  const [connectionError, setConnectionError] = useState<string | null>(null);
   const [retryCount, setRetryCount] = useState(0);
-  const scrollRef = useRef<HTMLDivElement>(null);
   const eventSourceRef = useRef<EventSource | null>(null);
   const retryTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const searchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
   const [scrollTop, setScrollTop] = useState(0);
   const [viewHeight, setViewHeight] = useState(800);
-  const [activeTab, setActiveTab] = useState<"all" | "firewall">("firewall");
-  const fwScrollRef = useRef<HTMLDivElement>(null);
-  const [fwScrollTop, setFwScrollTop] = useState(0);
-  const [fwViewHeight, setFwViewHeight] = useState(800);
+  const [dbRules, setDbRules] = useState<string[]>([]);
 
-  // The logs to display depend on mode
   const displayLogs = mode === "live" ? liveLogs : historyLogs;
 
-  // Fetch a page of history from the server
-  const fetchPage = useCallback(async (page: number, searchQuery?: string) => {
-    setHistoryLoading(true);
-    try {
-      const params = new URLSearchParams();
-      params.set("page", String(page));
-      params.set("pageSize", String(PAGE_SIZE));
-      if (severity) params.set("severity", severity);
-      if (searchQuery ?? committedSearch) params.set("search", searchQuery ?? committedSearch);
-      if (sourceFilter) params.set("source", sourceFilter);
+  const fetchPage = useCallback(
+    async (page: number, searchOverride?: string, filterOverride?: Filters) => {
+      setHistoryLoading(true);
+      try {
+        const params = new URLSearchParams();
+        params.set("page", String(page));
+        params.set("pageSize", String(PAGE_SIZE));
+        params.set("firewall", "true");
+        const q = searchOverride ?? committedSearch;
+        if (q) params.set("search", q);
 
-      const res = await fetch(`/api/logs?${params}`);
-      const data: PaginatedResponse = await res.json();
-      setHistoryLogs(data.logs);
-      setHistoryPage(data.page);
-      setHistoryTotal(data.total);
-      setHistoryTotalPages(data.totalPages);
-    } catch {
-      // ignore
-    } finally {
-      setHistoryLoading(false);
-    }
-  }, [severity, committedSearch, sourceFilter]);
+        const f = filterOverride ?? filters;
+        if (f.action) params.set("action", f.action);
+        if (f.proto) params.set("proto", f.proto);
+        if (f.srcIp) params.set("srcIp", f.srcIp);
+        if (f.srcPort) params.set("srcPort", f.srcPort);
+        if (f.dstIp) params.set("dstIp", f.dstIp);
+        if (f.dstPort) params.set("dstPort", f.dstPort);
+        if (f.rule) params.set("rule", f.rule);
+        if (f.ipMatch === "or") params.set("ipMatch", "or");
 
-  // Handle search input with debounce
-  const handleSearchChange = useCallback((value: string) => {
-    setSearch(value);
-    if (searchTimerRef.current) clearTimeout(searchTimerRef.current);
-    searchTimerRef.current = setTimeout(() => {
-      setCommittedSearch(value);
-      if (value.trim()) {
-        // Switch to history mode for search
-        setMode("history");
-        fetchPage(1, value);
+        const res = await fetch(`/api/logs?${params}`);
+        const data: PaginatedResponse = await res.json();
+        setHistoryLogs(data.logs);
+        setHistoryPage(data.page);
+        setHistoryTotal(data.total);
+        setHistoryTotalPages(data.totalPages);
+      } finally {
+        setHistoryLoading(false);
       }
-    }, 400);
-  }, [fetchPage]);
+    },
+    [committedSearch, filters],
+  );
 
-  // Handle search submit (Enter key)
-  const handleSearchSubmit = useCallback(() => {
-    if (searchTimerRef.current) clearTimeout(searchTimerRef.current);
-    setCommittedSearch(search);
-    if (search.trim()) {
-      setMode("history");
-      fetchPage(1, search);
-    }
-  }, [search, fetchPage]);
+  const handlePageChange = useCallback(
+    (page: number) => {
+      setHistoryPage(page);
+      fetchPage(page);
+      scrollRef.current?.scrollTo(0, 0);
+    },
+    [fetchPage],
+  );
 
-  // Handle page change
-  const handlePageChange = useCallback((page: number) => {
-    setHistoryPage(page);
-    fetchPage(page);
-    // Scroll to top of the log view
-    scrollRef.current?.scrollTo(0, 0);
-    fwScrollRef.current?.scrollTo(0, 0);
-  }, [fetchPage]);
-
-  // Go live
   const goLive = useCallback(() => {
     setMode("live");
     setAutoScroll(true);
     setHistoryPage(1);
   }, []);
 
-  // When filters change in history mode, re-fetch
+  const browseHistory = useCallback(() => {
+    setMode("history");
+    fetchPage(1);
+    fetch("/api/logs/filters")
+      .then((r) => r.json())
+      .then((d: { rules: string[] }) => setDbRules(d.rules))
+      .catch(() => {});
+  }, [fetchPage]);
+
+  const handleFiltersChange = useCallback(
+    (f: Filters) => {
+      setFilters(f);
+      if (f.search !== committedSearch) {
+        setCommittedSearch(f.search);
+      }
+      if (mode === "history") {
+        fetchPage(1, f.search, f);
+      }
+    },
+    [committedSearch, fetchPage, mode],
+  );
+
+  const clearAllFilters = useCallback(() => {
+    setFilters(emptyFilters);
+    setCommittedSearch("");
+    if (mode === "history") fetchPage(1, "", emptyFilters);
+  }, [mode, fetchPage]);
+
   useEffect(() => {
     if (mode === "history") {
       fetchPage(1);
     }
-  }, [severity, sourceFilter, mode, fetchPage]);
+  }, [mode, fetchPage]);
 
-  // Check polling status
-  const checkStatus = useCallback(async () => {
-    try {
-      const res = await fetch("/api/poll");
-      const data = await res.json();
-      setPollStatus(data);
-    } catch {
-      // ignore
-    }
-  }, []);
-
-  // Start polling the UniFi API
-  const startPolling = useCallback(async () => {
-    setIsPolling(true);
-    setConnectionError(null);
-    try {
-      const res = await fetch("/api/poll", { method: "POST" });
-      const data = await res.json();
-      if (data.error) {
-        setConnectionError(data.error);
-        setPollStatus((prev) => prev ? { ...prev, lastError: data.error } : null);
-      } else {
-        setConnectionError(null);
-      }
-      checkStatus();
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : "Network error";
-      setConnectionError(msg);
-    } finally {
-      setIsPolling(false);
-    }
-  }, [checkStatus]);
-
-  // Connect to SSE stream for real-time updates
   const connectStream = useCallback(() => {
     if (eventSourceRef.current) {
       eventSourceRef.current.close();
@@ -407,10 +552,9 @@ export default function Home() {
       clearTimeout(retryTimeoutRef.current);
       retryTimeoutRef.current = null;
     }
-
     setIsConnecting(true);
 
-    const es = new EventSource(`/api/logs?stream=true`);
+    const es = new EventSource("/api/logs?stream=true&firewall=true");
     eventSourceRef.current = es;
 
     es.onopen = () => {
@@ -446,134 +590,122 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
-    checkStatus();
     connectStream();
-    const statusInterval = setInterval(checkStatus, 15000);
     return () => {
       eventSourceRef.current?.close();
       if (retryTimeoutRef.current) clearTimeout(retryTimeoutRef.current);
-      clearInterval(statusInterval);
     };
-  }, [connectStream, checkStatus]);
+  }, [connectStream]);
 
-  // Measure container height
   useEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
-    const ro = new ResizeObserver(([entry]) => {
-      setViewHeight(entry.contentRect.height);
-    });
+    const ro = new ResizeObserver(([entry]) =>
+      setViewHeight(entry.contentRect.height),
+    );
     ro.observe(el);
     return () => ro.disconnect();
   }, []);
 
-  // Auto-scroll to bottom when new logs arrive (live mode only)
   useEffect(() => {
     if (mode === "live" && autoScroll && scrollRef.current) {
-      const el = scrollRef.current;
-      el.scrollTop = el.scrollHeight;
+      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
   }, [liveLogs, autoScroll, mode]);
 
-  // Track scroll position for virtual scrolling
   const handleScroll = useCallback(() => {
     const el = scrollRef.current;
     if (!el) return;
     setScrollTop(el.scrollTop);
     if (mode === "live") {
-      const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < ROW_HEIGHT * 2;
+      const atBottom =
+        el.scrollHeight - el.scrollTop - el.clientHeight < ROW_HEIGHT * 2;
       if (!atBottom && autoScroll) setAutoScroll(false);
     }
   }, [autoScroll, mode]);
 
-  // Client-side filtered logs for live mode (All Logs tab)
-  const filteredLogs = useMemo(() => {
-    if (mode === "history") return displayLogs; // Already filtered server-side
-    return displayLogs.filter((log) => {
-      if (severity && log.severity !== severity) return false;
-      if (sourceFilter) {
-        const q = sourceFilter.toLowerCase();
-        if (!log.host.toLowerCase().includes(q)) return false;
-      }
-      if (search) {
-        const q = search.toLowerCase();
-        if (!log.message.toLowerCase().includes(q) && !log.host.toLowerCase().includes(q) && !log.raw.toLowerCase().includes(q)) return false;
-      }
-      return true;
-    });
-  }, [displayLogs, severity, search, sourceFilter, mode]);
+  const uniqueRules = useMemo(() => {
+    const seen = new Set<string>();
+    for (const log of displayLogs) {
+      const fw = parseFirewallMessage(log.message);
+      if (fw) seen.add(fw.descr || fw.rule);
+    }
+    return Array.from(seen).sort();
+  }, [displayLogs]);
 
-  // Firewall logs
   const firewallLogs = useMemo(() => {
     return displayLogs.filter((log) => {
-      if (!isFirewallLog(log)) return false;
-      if (mode === "live") {
-        if (severity && log.severity !== severity) return false;
-        if (search) {
-          const q = search.toLowerCase();
-          if (!log.message.toLowerCase().includes(q) && !log.host.toLowerCase().includes(q) && !log.raw.toLowerCase().includes(q)) return false;
-        }
+      if (mode === "live" && filters.search) {
+        const q = filters.search.toLowerCase();
+        if (
+          !log.message.toLowerCase().includes(q) &&
+          !log.host.toLowerCase().includes(q) &&
+          !log.raw.toLowerCase().includes(q)
+        )
+          return false;
       }
       return true;
     });
-  }, [displayLogs, severity, search, mode]);
+  }, [displayLogs, filters.search, mode]);
 
   const firewallParsed = useMemo(() => {
-    const parsed = firewallLogs.map((log) => ({ log, fw: parseFirewallMessage(log.message)! }));
-    if (!fwIp) return parsed;
-    const q = fwIp.toLowerCase();
-    return parsed.filter(({ fw }) => {
-      if (fwIpScope === "src") return fw.src.toLowerCase().includes(q);
-      if (fwIpScope === "dst") return fw.dst.toLowerCase().includes(q);
-      return fw.src.toLowerCase().includes(q) || fw.dst.toLowerCase().includes(q);
-    });
-  }, [firewallLogs, fwIp, fwIpScope]);
+    let parsed = firewallLogs.map((log) => ({
+      log,
+      fw: parseFirewallMessage(log.message)!,
+    }));
+    if (filters.action) {
+      parsed = parsed.filter(({ fw }) => fw.action === filters.action);
+    }
+    if (filters.proto) {
+      parsed = parsed.filter(
+        ({ fw }) => fw.proto.toUpperCase() === filters.proto.toUpperCase(),
+      );
+    }
+    const hasSrcFilter = !!(filters.srcIp || filters.srcPort);
+    const hasDstFilter = !!(filters.dstIp || filters.dstPort);
+    if (hasSrcFilter || hasDstFilter) {
+      parsed = parsed.filter(({ fw }) => {
+        const srcMatch =
+          (!filters.srcIp || fw.src.toLowerCase().includes(filters.srcIp.toLowerCase())) &&
+          (!filters.srcPort || fw.spt === filters.srcPort);
+        const dstMatch =
+          (!filters.dstIp || fw.dst.toLowerCase().includes(filters.dstIp.toLowerCase())) &&
+          (!filters.dstPort || fw.dpt === filters.dstPort);
 
-  // Virtual scroll for all logs tab
+        if (filters.ipMatch === "or" && hasSrcFilter && hasDstFilter) {
+          return srcMatch || dstMatch;
+        }
+        return (!hasSrcFilter || srcMatch) && (!hasDstFilter || dstMatch);
+      });
+    }
+    if (filters.rule) {
+      const q = filters.rule.toLowerCase();
+      parsed = parsed.filter(
+        ({ fw }) =>
+          fw.rule.toLowerCase().includes(q) ||
+          fw.descr.toLowerCase().includes(q),
+      );
+    }
+    return parsed;
+  }, [firewallLogs, filters]);
+
   const virtualData = useMemo(() => {
-    const totalHeight = filteredLogs.length * ROW_HEIGHT;
-    const startIdx = Math.max(0, Math.floor(scrollTop / ROW_HEIGHT) - OVERSCAN);
-    const endIdx = Math.min(filteredLogs.length, Math.ceil((scrollTop + viewHeight) / ROW_HEIGHT) + OVERSCAN);
-    const offsetTop = startIdx * ROW_HEIGHT;
-    return { totalHeight, startIdx, endIdx, offsetTop, visibleLogs: filteredLogs.slice(startIdx, endIdx) };
-  }, [filteredLogs, scrollTop, viewHeight]);
-
-  // Virtual scroll for firewall tab
-  const fwVirtualData = useMemo(() => {
     const totalHeight = firewallParsed.length * ROW_HEIGHT;
-    const startIdx = Math.max(0, Math.floor(fwScrollTop / ROW_HEIGHT) - OVERSCAN);
-    const endIdx = Math.min(firewallParsed.length, Math.ceil((fwScrollTop + fwViewHeight) / ROW_HEIGHT) + OVERSCAN);
+    const startIdx = Math.max(
+      0,
+      Math.floor(scrollTop / ROW_HEIGHT) - OVERSCAN,
+    );
+    const endIdx = Math.min(
+      firewallParsed.length,
+      Math.ceil((scrollTop + viewHeight) / ROW_HEIGHT) + OVERSCAN,
+    );
     const offsetTop = startIdx * ROW_HEIGHT;
-    return { totalHeight, startIdx, endIdx, offsetTop, visible: firewallParsed.slice(startIdx, endIdx) };
-  }, [firewallParsed, fwScrollTop, fwViewHeight]);
-
-  // Measure firewall scroll container
-  useEffect(() => {
-    const el = fwScrollRef.current;
-    if (!el) return;
-    const ro = new ResizeObserver(([entry]) => {
-      setFwViewHeight(entry.contentRect.height);
-    });
-    ro.observe(el);
-    return () => ro.disconnect();
-  }, [activeTab]);
-
-  const handleFwScroll = useCallback(() => {
-    const el = fwScrollRef.current;
-    if (!el) return;
-    setFwScrollTop(el.scrollTop);
-    if (mode === "live") {
-      const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < ROW_HEIGHT * 2;
-      if (!atBottom && autoScroll) setAutoScroll(false);
-    }
-  }, [autoScroll, mode]);
-
-  // Auto-scroll firewall tab
-  useEffect(() => {
-    if (mode === "live" && autoScroll && activeTab === "firewall" && fwScrollRef.current) {
-      fwScrollRef.current.scrollTop = fwScrollRef.current.scrollHeight;
-    }
-  }, [firewallLogs, autoScroll, activeTab, mode]);
+    return {
+      totalHeight,
+      offsetTop,
+      visible: firewallParsed.slice(startIdx, endIdx),
+    };
+  }, [firewallParsed, scrollTop, viewHeight]);
 
   const handleClear = async () => {
     await fetch("/api/logs", { method: "DELETE" });
@@ -583,323 +715,346 @@ export default function Home() {
     setHistoryTotalPages(1);
   };
 
-  const notConfigured = pollStatus && !pollStatus.configured;
-  const hasError = connectionError || pollStatus?.lastError;
-  const totalCount = mode === "history" ? historyTotal : (pollStatus?.logCount ?? liveLogs.length);
+  const totalCount =
+    mode === "history" ? historyTotal : liveLogs.length;
+
+  const activeFilterCount = useMemo(() => {
+    let count = 0;
+    if (filters.action) count++;
+    if (filters.proto) count++;
+    if (filters.srcIp) count++;
+    if (filters.srcPort) count++;
+    if (filters.dstIp) count++;
+    if (filters.dstPort) count++;
+    if (filters.rule) count++;
+    if (filters.search) count++;
+    return count;
+  }, [filters]);
+
+  const filterBadges = useMemo(() => {
+    const badges: { label: string; key: keyof Filters }[] = [];
+    if (filters.action)
+      badges.push({ label: `Action: ${filters.action}`, key: "action" });
+    if (filters.proto)
+      badges.push({ label: `Proto: ${filters.proto}`, key: "proto" });
+    const hasSrc = !!(filters.srcIp || filters.srcPort);
+    const hasDst = !!(filters.dstIp || filters.dstPort);
+    const orMode = filters.ipMatch === "or" && hasSrc && hasDst;
+    if (filters.srcIp)
+      badges.push({ label: `Src: ${filters.srcIp}`, key: "srcIp" });
+    if (filters.srcPort)
+      badges.push({ label: `Src Port: ${filters.srcPort}`, key: "srcPort" });
+    if (orMode)
+      badges.push({ label: "OR", key: "ipMatch" });
+    if (filters.dstIp)
+      badges.push({ label: `Dst: ${filters.dstIp}`, key: "dstIp" });
+    if (filters.dstPort)
+      badges.push({ label: `Dst Port: ${filters.dstPort}`, key: "dstPort" });
+    if (filters.rule)
+      badges.push({ label: `Rule: ${filters.rule}`, key: "rule" });
+    if (filters.search)
+      badges.push({ label: `"${filters.search}"`, key: "search" });
+    return badges;
+  }, [filters]);
+
+  const removeFilter = useCallback((key: keyof Filters) => {
+    setFilters((prev) => {
+      const next = { ...prev, [key]: key === "ipMatch" ? "and" : "" };
+      if (key === "search") setCommittedSearch("");
+      if (mode === "history") fetchPage(1, key === "search" ? "" : undefined, next);
+      return next;
+    });
+  }, [mode, fetchPage]);
+
+  const paginationPages = useMemo(() => {
+    const pages: (number | "...")[] = [];
+    const w = 2;
+    for (let i = 1; i <= historyTotalPages; i++) {
+      if (
+        i === 1 ||
+        i === historyTotalPages ||
+        (i >= historyPage - w && i <= historyPage + w)
+      ) {
+        pages.push(i);
+      } else if (pages.length > 0 && pages[pages.length - 1] !== "...") {
+        pages.push("...");
+      }
+    }
+    return pages;
+  }, [historyPage, historyTotalPages]);
 
   return (
-    <div className="flex flex-col h-screen bg-gray-950 text-gray-100">
-      {/* Config banner */}
-      {notConfigured && (
-        <div className="px-6 py-3 bg-yellow-900/50 border-b border-yellow-700 text-yellow-200 text-sm">
-          UniFi not configured. Edit <code className="bg-yellow-900 px-1 rounded">.env.local</code> with your controller URL, username, and password, then restart.
-        </div>
-      )}
-
-      {/* Error banner */}
-      {hasError && !notConfigured && (
-        <div className="px-6 py-3 bg-red-900/50 border-b border-red-700 text-red-200 text-sm flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <svg className="h-4 w-4 shrink-0" fill="currentColor" viewBox="0 0 20 20">
-              <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
-            </svg>
-            <span>{connectionError || pollStatus?.lastError}</span>
-          </div>
-          <button
-            onClick={() => { setConnectionError(null); startPolling(); }}
-            className="px-2 py-1 text-xs bg-red-800 hover:bg-red-700 rounded transition-colors"
-          >
-            Retry
-          </button>
-        </div>
-      )}
-
-      {/* Header */}
-      <header className="flex items-center justify-between px-6 py-3 bg-gray-900 border-b border-gray-800">
+    <div className="flex flex-col h-screen bg-background text-foreground">
+      <header className="flex items-center justify-between px-6 py-3 bg-card border-b border-border">
         <div className="flex items-center gap-3">
-          <h1 className="text-xl font-bold tracking-tight">UniFi Log Viewer</h1>
+          <h1 className="text-lg font-semibold tracking-tight">
+            Firewall Log Viewer
+          </h1>
+          <Separator orientation="vertical" className="h-5" />
           <span
-            className={`inline-flex items-center gap-1.5 text-xs ${connected ? "text-green-400" : isConnecting ? "text-yellow-400" : "text-red-400"}`}
-            title={connected ? "Stream connected" : isConnecting ? "Connecting..." : `Disconnected (retry #${retryCount})`}
+            className={cn(
+              "inline-flex items-center gap-1.5 text-xs",
+              connected
+                ? "text-green-400"
+                : isConnecting
+                  ? "text-yellow-400"
+                  : "text-destructive",
+            )}
+            title={
+              connected
+                ? "Stream connected"
+                : isConnecting
+                  ? "Connecting..."
+                  : `Disconnected (retry #${retryCount})`
+            }
           >
             {isConnecting ? (
               <Spinner className="text-yellow-400" />
             ) : (
-              <span className={`inline-block w-2 h-2 rounded-full ${connected ? "bg-green-500" : "bg-red-500"}`} />
+              <span
+                className={cn(
+                  "inline-block w-2 h-2 rounded-full",
+                  connected ? "bg-green-500" : "bg-destructive",
+                )}
+              />
             )}
-            {isConnecting ? "Connecting" : connected ? "Live" : "Disconnected"}
+            {isConnecting
+              ? "Connecting"
+              : connected
+                ? "Stream"
+                : "Disconnected"}
           </span>
-          {pollStatus?.syslog?.running && (
-            <span className="inline-flex items-center gap-1 text-xs text-emerald-400" title={`UDP+TCP syslog receiver on port ${pollStatus.syslog.port}`}>
-              <span className="inline-block w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-              Syslog :{pollStatus.syslog.port}
-            </span>
-          )}
-          {pollStatus?.polling && (
-            <span className="text-xs text-green-400">Polling active</span>
-          )}
-          <span className="text-sm text-gray-400" suppressHydrationWarning>
-            {activeTab === "firewall"
-              ? `${firewallParsed.length} firewall`
-              : `${filteredLogs.length} shown`}
-            {mode === "history" && ` of ${historyTotal.toLocaleString()}`}
-          </span>
-          {mode === "history" && (
-            <span className="text-xs bg-blue-900/60 text-blue-300 px-2 py-0.5 rounded">
-              History · Page {historyPage}
-            </span>
-          )}
         </div>
-        <div className="flex items-center gap-3">
-          <button
-            onClick={startPolling}
-            disabled={notConfigured || isPolling}
-            className="px-3 py-1.5 text-sm bg-blue-700 hover:bg-blue-600 disabled:bg-gray-700 disabled:text-gray-500 rounded-md transition-colors inline-flex items-center gap-1.5"
-          >
-            {isPolling && <Spinner />}
-            {isPolling ? "Connecting..." : pollStatus?.polling ? "Poll Now" : "Start Polling"}
-          </button>
-          <button
-            onClick={handleClear}
-            className="px-3 py-1.5 text-sm bg-red-900 hover:bg-red-800 rounded-md transition-colors"
-          >
+        <div className="flex items-center gap-2">
+          <Button onClick={handleClear} variant="destructive" size="sm">
             Clear
-          </button>
+          </Button>
+        </div>
+      </header>
+
+      <div className="flex items-center gap-2 px-6 py-2 bg-card/50 border-b border-border">
+        {mode === "live" ? (
+          <>
+            <Badge className="bg-green-600 hover:bg-green-600 text-white border-green-600 font-medium">
+              ● Live
+            </Badge>
+            <Button variant="outline" size="xs" onClick={browseHistory}>
+              Browse History
+            </Button>
+          </>
+        ) : (
+          <>
+            <Badge variant="secondary" className="font-medium">
+              History · Page {historyPage}/{historyTotalPages}
+            </Badge>
+            <Button
+              size="xs"
+              onClick={goLive}
+              className="bg-green-700 hover:bg-green-600 text-white border-green-700"
+            >
+              ● Go Live
+            </Button>
+          </>
+        )}
+
+        <Separator orientation="vertical" className="h-5 mx-1" />
+
+        <FilterDialog
+          filters={filters}
+          onChange={handleFiltersChange}
+          activeCount={activeFilterCount}
+          onClear={clearAllFilters}
+          ruleOptions={mode === "history" ? dbRules : uniqueRules}
+        />
+
+        {filterBadges.map(({ label, key }) =>
+          key === "ipMatch" ? (
+            <span
+              key={key}
+              className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider"
+            >
+              or
+            </span>
+          ) : (
+            <Badge key={key} variant="outline" className="gap-1 pr-1">
+              {label}
+              <button
+                onClick={() => removeFilter(key)}
+                className="ml-0.5 rounded-full hover:bg-muted p-0.5"
+              >
+                <svg
+                  xmlns="http://www.w3.org/2000/svg"
+                  className="size-3"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                >
+                  <path d="M18 6 6 18" />
+                  <path d="m6 6 12 12" />
+                </svg>
+              </button>
+            </Badge>
+          ),
+        )}
+
+        {activeFilterCount > 0 && (
+          <Button variant="ghost" size="xs" onClick={clearAllFilters}>
+            Clear all
+          </Button>
+        )}
+
+        {historyLoading && <Spinner className="text-muted-foreground" />}
+
+        <div className="ml-auto flex items-center gap-3">
+          <span
+            className="text-xs text-muted-foreground"
+            suppressHydrationWarning
+          >
+            {firewallParsed.length} entries
+          </span>
           {mode === "live" && (
-            <label className="flex items-center gap-1.5 text-sm text-gray-400 cursor-pointer">
+            <label className="flex items-center gap-1.5 text-sm text-muted-foreground cursor-pointer select-none">
               <input
                 type="checkbox"
                 checked={autoScroll}
                 onChange={(e) => setAutoScroll(e.target.checked)}
-                className="accent-blue-500"
+                className="accent-primary"
               />
               Auto-scroll
             </label>
           )}
         </div>
-      </header>
+      </div>
 
-      {/* Filter bar */}
-      <div className="flex items-center gap-3 px-6 py-2 bg-gray-900/50 border-b border-gray-800">
-        <div className="relative">
-          <input
-            type="text"
-            placeholder="Search all logs..."
-            value={search}
-            onChange={(e) => handleSearchChange(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && handleSearchSubmit()}
-            className="px-3 py-1.5 pr-8 text-sm bg-gray-800 border border-gray-700 rounded-md focus:outline-none focus:border-blue-500 w-64"
-          />
-          {search && (
-            <button
-              onClick={() => { setSearch(""); setCommittedSearch(""); if (mode === "history" && !severity && !sourceFilter) goLive(); else if (mode === "history") fetchPage(1, ""); }}
-              className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-500 hover:text-gray-300"
+      <div className="flex bg-card text-muted-foreground text-xs uppercase font-mono shrink-0 border-b border-border">
+        <div className="px-3 py-2 w-24 shrink-0">Time</div>
+        <div className="px-3 py-2 w-20 shrink-0">Action</div>
+        <div className="px-3 py-2 w-72 shrink-0">Rule</div>
+        <div className="px-3 py-2 w-20 shrink-0">Iface</div>
+        <div className="px-3 py-2 w-20 shrink-0">Proto</div>
+        <div className="px-3 py-2 w-48 shrink-0">Source</div>
+        <div className="px-3 py-2 w-48 shrink-0">Destination</div>
+        <div className="px-3 py-2 flex-1">Rule ID</div>
+      </div>
+
+      <div
+        ref={scrollRef}
+        className="flex-1 overflow-auto min-h-0"
+        onScroll={handleScroll}
+      >
+        {firewallParsed.length === 0 ? (
+          <div className="px-3 py-12 text-center text-muted-foreground">
+            {historyLoading ? (
+              <div className="flex flex-col items-center gap-3">
+                <Spinner className="h-6 w-6" />
+                <span>Loading...</span>
+              </div>
+            ) : isConnecting && mode === "live" ? (
+              <div className="flex flex-col items-center gap-3">
+                <Spinner className="h-6 w-6" />
+                <span>Connecting to log stream...</span>
+              </div>
+            ) : activeFilterCount > 0 ? (
+              <div className="flex flex-col items-center gap-3">
+                <span>No matching firewall entries</span>
+                <Button variant="outline" size="sm" onClick={clearAllFilters}>
+                  Clear filters
+                </Button>
+              </div>
+            ) : (
+              "No firewall logs yet. Configure your UniFi controller to send syslog to this server."
+            )}
+          </div>
+        ) : (
+          <div
+            style={{ height: virtualData.totalHeight, position: "relative" }}
+          >
+            <div
+              style={{
+                position: "absolute",
+                top: virtualData.offsetTop,
+                left: 0,
+                right: 0,
+              }}
             >
-              ✕
-            </button>
+              {virtualData.visible.map(({ log, fw }) => (
+                <FirewallRow
+                  key={log.id}
+                  log={log}
+                  fw={fw}
+                  isExpanded={expandedId === log.id}
+                  onToggle={() =>
+                    setExpandedId(expandedId === log.id ? null : log.id)
+                  }
+                />
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+
+      <div className="flex items-center justify-between px-6 py-2 bg-card border-t border-border text-sm shrink-0">
+        <span className="text-muted-foreground" suppressHydrationWarning>
+          {totalCount.toLocaleString()} total entries
+          {mode === "history" &&
+            ` · Page ${historyPage} of ${historyTotalPages}`}
+        </span>
+        <div className="flex items-center gap-1.5">
+          {mode === "history" && (
+            <>
+              <Button
+                size="xs"
+                variant="outline"
+                onClick={() => handlePageChange(historyPage - 1)}
+                disabled={historyPage <= 1}
+              >
+                ← Newer
+              </Button>
+              {paginationPages.map((p, i) =>
+                p === "..." ? (
+                  <span key={`e${i}`} className="text-muted-foreground px-1">
+                    …
+                  </span>
+                ) : (
+                  <Button
+                    key={p}
+                    size="xs"
+                    variant={p === historyPage ? "default" : "outline"}
+                    onClick={() => handlePageChange(p as number)}
+                  >
+                    {p}
+                  </Button>
+                ),
+              )}
+              <Button
+                size="xs"
+                variant="outline"
+                onClick={() => handlePageChange(historyPage + 1)}
+                disabled={historyPage >= historyTotalPages}
+              >
+                Older →
+              </Button>
+              <Separator orientation="vertical" className="h-4 mx-1" />
+            </>
+          )}
+          {mode === "live" ? (
+            <Button variant="outline" size="sm" onClick={browseHistory}>
+              Browse History
+            </Button>
+          ) : (
+            <Button
+              size="sm"
+              onClick={goLive}
+              className="bg-green-700 hover:bg-green-600 text-white border-green-700"
+            >
+              ● Go Live
+            </Button>
           )}
         </div>
-        {activeTab === "firewall" ? (
-          <>
-            <input
-              type="text"
-              placeholder="Filter IP address..."
-              value={fwIp}
-              onChange={(e) => setFwIp(e.target.value)}
-              className="px-3 py-1.5 text-sm bg-gray-800 border border-gray-700 rounded-md focus:outline-none focus:border-blue-500 w-48"
-            />
-            <select
-              value={fwIpScope}
-              onChange={(e) => setFwIpScope(e.target.value as "either" | "src" | "dst")}
-              className="px-3 py-1.5 text-sm bg-gray-800 border border-gray-700 rounded-md focus:outline-none focus:border-blue-500"
-            >
-              <option value="either">Source or Dest</option>
-              <option value="src">Source only</option>
-              <option value="dst">Dest only</option>
-            </select>
-          </>
-        ) : (
-          <input
-            type="text"
-            placeholder="Filter by host..."
-            value={sourceFilter}
-            onChange={(e) => setSourceFilter(e.target.value)}
-            className="px-3 py-1.5 text-sm bg-gray-800 border border-gray-700 rounded-md focus:outline-none focus:border-blue-500 w-52"
-          />
-        )}
-        <select
-          value={severity}
-          onChange={(e) => setSeverity(e.target.value)}
-          className="px-3 py-1.5 text-sm bg-gray-800 border border-gray-700 rounded-md focus:outline-none focus:border-blue-500"
-        >
-          <option value="">All Severities</option>
-          <option value="emergency">Emergency</option>
-          <option value="alert">Alert</option>
-          <option value="critical">Critical</option>
-          <option value="error">Error</option>
-          <option value="warning">Warning</option>
-          <option value="notice">Notice</option>
-          <option value="info">Info</option>
-          <option value="debug">Debug</option>
-        </select>
-        {(search || sourceFilter || fwIp || severity) && (
-          <button
-            onClick={() => {
-              setSearch(""); setCommittedSearch(""); setSourceFilter("");
-              setFwIp(""); setFwIpScope("either"); setSeverity("");
-              if (mode === "history") goLive();
-            }}
-            className="px-2 py-1 text-xs text-gray-400 hover:text-white transition-colors"
-          >
-            Clear filters
-          </button>
-        )}
-        {historyLoading && <Spinner className="text-blue-400" />}
       </div>
-
-      {/* Tab bar */}
-      <div className="flex items-center gap-0 bg-gray-900/80 border-b border-gray-800 px-6 shrink-0">
-        <button
-          onClick={() => setActiveTab("firewall")}
-          className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors inline-flex items-center gap-2 ${
-            activeTab === "firewall"
-              ? "border-orange-500 text-orange-400"
-              : "border-transparent text-gray-400 hover:text-gray-200"
-          }`}
-        >
-          Firewall
-          {firewallParsed.length > 0 && (
-            <span className="text-xs bg-gray-700 px-1.5 py-0.5 rounded-full">{firewallParsed.length}</span>
-          )}
-        </button>
-        <button
-          onClick={() => setActiveTab("all")}
-          className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
-            activeTab === "all"
-              ? "border-blue-500 text-blue-400"
-              : "border-transparent text-gray-400 hover:text-gray-200"
-          }`}
-        >
-          All Logs
-        </button>
-      </div>
-
-      {/* Tab content */}
-      <div className="flex-1 min-h-0 flex flex-col">
-        {activeTab === "all" ? (
-          <>
-            {/* All logs header */}
-            <div className="flex bg-gray-900 text-gray-400 text-xs uppercase font-mono shrink-0 border-b border-gray-800">
-              <div className="px-3 py-2 w-44 shrink-0">Time</div>
-              <div className="px-3 py-2 w-24 shrink-0">Severity</div>
-              <div className="px-3 py-2 w-28 shrink-0">Subsystem</div>
-              <div className="px-3 py-2 w-40 shrink-0">Host</div>
-              <div className="px-3 py-2 flex-1">Message</div>
-            </div>
-            <div
-              ref={scrollRef}
-              className="flex-1 overflow-auto min-h-0"
-              onScroll={handleScroll}
-            >
-              {filteredLogs.length === 0 ? (
-                <div className="px-3 py-12 text-center text-gray-500">
-                  {historyLoading ? (
-                    <div className="flex flex-col items-center gap-3">
-                      <Spinner className="h-6 w-6 text-gray-400" />
-                      <span>Loading...</span>
-                    </div>
-                  ) : isConnecting && mode === "live" ? (
-                    <div className="flex flex-col items-center gap-3">
-                      <Spinner className="h-6 w-6 text-gray-400" />
-                      <span>Connecting to log stream...</span>
-                    </div>
-                  ) : committedSearch ? (
-                    `No results for "${committedSearch}"`
-                  ) : notConfigured ? (
-                    "Configure .env.local with your UniFi controller credentials to get started."
-                  ) : (
-                    pollStatus?.syslog?.running
-                      ? `Syslog receiver listening on port ${pollStatus.syslog.port}. Configure your UniFi controller's SIEM settings to send logs here.`
-                      : "No logs yet. Click \"Start Polling\" to fetch logs from your UniFi controller."
-                  )}
-                </div>
-              ) : (
-                <div style={{ height: virtualData.totalHeight, position: "relative" }}>
-                  <div style={{ position: "absolute", top: virtualData.offsetTop, left: 0, right: 0 }}>
-                    {virtualData.visibleLogs.map((log) => (
-                      <LogRow
-                        key={log.id}
-                        log={log}
-                        isExpanded={expandedId === log.id}
-                        onToggle={() => setExpandedId(expandedId === log.id ? null : log.id)}
-                      />
-                    ))}
-                  </div>
-                </div>
-              )}
-            </div>
-          </>
-        ) : (
-          <>
-            {/* Firewall header */}
-            <div className="flex bg-gray-900 text-gray-400 text-xs uppercase font-mono shrink-0 border-b border-gray-800">
-              <div className="px-3 py-2 w-24 shrink-0">Time</div>
-              <div className="px-3 py-2 w-20 shrink-0">Action</div>
-              <div className="px-3 py-2 w-72 shrink-0">Rule</div>
-              <div className="px-3 py-2 w-20 shrink-0">Iface</div>
-              <div className="px-3 py-2 w-20 shrink-0">Proto</div>
-              <div className="px-3 py-2 w-48 shrink-0">Source</div>
-              <div className="px-3 py-2 w-48 shrink-0">Destination</div>
-              <div className="px-3 py-2 w-16 shrink-0">Len</div>
-              <div className="px-3 py-2 flex-1">Rule ID</div>
-            </div>
-            <div
-              ref={fwScrollRef}
-              className="flex-1 overflow-auto min-h-0"
-              onScroll={handleFwScroll}
-            >
-              {firewallParsed.length === 0 ? (
-                <div className="px-3 py-12 text-center text-gray-500">
-                  {historyLoading ? (
-                    <div className="flex flex-col items-center gap-3">
-                      <Spinner className="h-6 w-6 text-gray-400" />
-                      <span>Loading...</span>
-                    </div>
-                  ) : committedSearch ? (
-                    `No firewall results for "${committedSearch}"`
-                  ) : (
-                    "No firewall log entries yet."
-                  )}
-                </div>
-              ) : (
-                <div style={{ height: fwVirtualData.totalHeight, position: "relative" }}>
-                  <div style={{ position: "absolute", top: fwVirtualData.offsetTop, left: 0, right: 0 }}>
-                    {fwVirtualData.visible.map(({ log, fw }) => (
-                      <FirewallRow
-                        key={log.id}
-                        log={log}
-                        fw={fw}
-                        isExpanded={expandedId === log.id}
-                        onToggle={() => setExpandedId(expandedId === log.id ? null : log.id)}
-                      />
-                    ))}
-                  </div>
-                </div>
-              )}
-            </div>
-          </>
-        )}
-      </div>
-
-      {/* Pagination bar */}
-      <PaginationBar
-        page={historyPage}
-        totalPages={historyTotalPages}
-        total={totalCount}
-        onPageChange={handlePageChange}
-        isLive={mode === "live"}
-        onGoLive={goLive}
-      />
     </div>
   );
 }
