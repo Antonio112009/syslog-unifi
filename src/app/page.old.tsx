@@ -15,14 +15,6 @@ interface SyslogEntry {
   key: string;
 }
 
-interface PaginatedResponse {
-  logs: SyslogEntry[];
-  total: number;
-  page: number;
-  pageSize: number;
-  totalPages: number;
-}
-
 interface PollStatus {
   configured: boolean;
   polling: boolean;
@@ -45,7 +37,6 @@ const SEVERITY_COLORS: Record<string, string> = {
 
 const ROW_HEIGHT = 32;
 const OVERSCAN = 10;
-const PAGE_SIZE = 100;
 
 interface ParsedFirewall {
   rule: string;
@@ -65,6 +56,7 @@ function parseFirewallMessage(msg: string): ParsedFirewall | null {
   const ruleMatch = msg.match(/\[([^\]]+)\]/);
   if (!ruleMatch) return null;
   const ruleRaw = ruleMatch[1];
+  // e.g. LAN_LOCAL-A-30000 → action A=Allow, D=Drop, R=Reject
   const actionCode = ruleRaw.match(/-([ADR])-/)?.[1] || "";
   const actionMap: Record<string, string> = { A: "Allow", D: "Drop", R: "Reject" };
   const action = actionMap[actionCode] || actionCode;
@@ -111,7 +103,7 @@ function LogRow({ log, isExpanded, onToggle }: { log: SyslogEntry; isExpanded: b
       onClick={onToggle}
     >
       <div className="px-3 py-1.5 text-gray-400 whitespace-nowrap w-44 shrink-0">
-        {log.timestamp.slice(0, 19).replace("T", " ")}
+        {log.timestamp.slice(11, 19)}
       </div>
       <div className="px-3 py-1.5 w-24 shrink-0">
         <span className={`px-2 py-0.5 rounded text-xs font-medium ${SEVERITY_COLORS[log.severity] || "bg-gray-600 text-white"}`}>
@@ -173,102 +165,10 @@ function FirewallRow({ log, fw, isExpanded, onToggle }: { log: SyslogEntry; fw: 
   );
 }
 
-function PaginationBar({
-  page,
-  totalPages,
-  total,
-  onPageChange,
-  isLive,
-  onGoLive,
-}: {
-  page: number;
-  totalPages: number;
-  total: number;
-  onPageChange: (p: number) => void;
-  isLive: boolean;
-  onGoLive: () => void;
-}) {
-  // Show a window of page numbers around the current page
-  const pages: (number | "...")[] = [];
-  const window = 2;
-  for (let i = 1; i <= totalPages; i++) {
-    if (i === 1 || i === totalPages || (i >= page - window && i <= page + window)) {
-      pages.push(i);
-    } else if (pages.length > 0 && pages[pages.length - 1] !== "...") {
-      pages.push("...");
-    }
-  }
-
-  return (
-    <div className="flex items-center justify-between px-4 py-2 bg-gray-900/80 border-t border-gray-800 text-sm shrink-0">
-      <div className="text-gray-400">
-        {total.toLocaleString()} total entries
-        {!isLive && ` · Page ${page} of ${totalPages}`}
-      </div>
-      <div className="flex items-center gap-2">
-        {!isLive && (
-          <>
-            <button
-              onClick={() => onPageChange(page + 1)}
-              disabled={page >= totalPages}
-              className="px-2 py-1 text-xs bg-gray-800 hover:bg-gray-700 disabled:opacity-40 disabled:cursor-not-allowed rounded transition-colors"
-            >
-              ← Older
-            </button>
-            {pages.map((p, i) =>
-              p === "..." ? (
-                <span key={`e${i}`} className="text-gray-500 px-1">…</span>
-              ) : (
-                <button
-                  key={p}
-                  onClick={() => onPageChange(p as number)}
-                  className={`px-2 py-1 text-xs rounded transition-colors ${
-                    p === page
-                      ? "bg-blue-600 text-white"
-                      : "bg-gray-800 hover:bg-gray-700 text-gray-300"
-                  }`}
-                >
-                  {p}
-                </button>
-              )
-            )}
-            <button
-              onClick={() => onPageChange(page - 1)}
-              disabled={page <= 1}
-              className="px-2 py-1 text-xs bg-gray-800 hover:bg-gray-700 disabled:opacity-40 disabled:cursor-not-allowed rounded transition-colors"
-            >
-              Newer →
-            </button>
-          </>
-        )}
-        <button
-          onClick={onGoLive}
-          className={`px-3 py-1 text-xs rounded transition-colors ${
-            isLive
-              ? "bg-green-700 text-green-100 cursor-default"
-              : "bg-green-800 hover:bg-green-700 text-green-200"
-          }`}
-        >
-          {isLive ? "● Live" : "Go Live"}
-        </button>
-      </div>
-    </div>
-  );
-}
-
 export default function Home() {
-  // Mode: live (SSE) or history (paginated)
-  const [mode, setMode] = useState<"live" | "history">("live");
-  const [liveLogs, setLiveLogs] = useState<SyslogEntry[]>([]);
-  const [historyLogs, setHistoryLogs] = useState<SyslogEntry[]>([]);
-  const [historyPage, setHistoryPage] = useState(1);
-  const [historyTotal, setHistoryTotal] = useState(0);
-  const [historyTotalPages, setHistoryTotalPages] = useState(1);
-  const [historyLoading, setHistoryLoading] = useState(false);
-
+  const [logs, setLogs] = useState<SyslogEntry[]>([]);
   const [severity, setSeverity] = useState("");
   const [search, setSearch] = useState("");
-  const [committedSearch, setCommittedSearch] = useState("");
   const [sourceFilter, setSourceFilter] = useState("");
   const [fwIp, setFwIp] = useState("");
   const [fwIpScope, setFwIpScope] = useState<"either" | "src" | "dst">("either");
@@ -283,87 +183,12 @@ export default function Home() {
   const scrollRef = useRef<HTMLDivElement>(null);
   const eventSourceRef = useRef<EventSource | null>(null);
   const retryTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const searchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [scrollTop, setScrollTop] = useState(0);
   const [viewHeight, setViewHeight] = useState(800);
   const [activeTab, setActiveTab] = useState<"all" | "firewall">("firewall");
   const fwScrollRef = useRef<HTMLDivElement>(null);
   const [fwScrollTop, setFwScrollTop] = useState(0);
   const [fwViewHeight, setFwViewHeight] = useState(800);
-
-  // The logs to display depend on mode
-  const displayLogs = mode === "live" ? liveLogs : historyLogs;
-
-  // Fetch a page of history from the server
-  const fetchPage = useCallback(async (page: number, searchQuery?: string) => {
-    setHistoryLoading(true);
-    try {
-      const params = new URLSearchParams();
-      params.set("page", String(page));
-      params.set("pageSize", String(PAGE_SIZE));
-      if (severity) params.set("severity", severity);
-      if (searchQuery ?? committedSearch) params.set("search", searchQuery ?? committedSearch);
-      if (sourceFilter) params.set("source", sourceFilter);
-
-      const res = await fetch(`/api/logs?${params}`);
-      const data: PaginatedResponse = await res.json();
-      setHistoryLogs(data.logs);
-      setHistoryPage(data.page);
-      setHistoryTotal(data.total);
-      setHistoryTotalPages(data.totalPages);
-    } catch {
-      // ignore
-    } finally {
-      setHistoryLoading(false);
-    }
-  }, [severity, committedSearch, sourceFilter]);
-
-  // Handle search input with debounce
-  const handleSearchChange = useCallback((value: string) => {
-    setSearch(value);
-    if (searchTimerRef.current) clearTimeout(searchTimerRef.current);
-    searchTimerRef.current = setTimeout(() => {
-      setCommittedSearch(value);
-      if (value.trim()) {
-        // Switch to history mode for search
-        setMode("history");
-        fetchPage(1, value);
-      }
-    }, 400);
-  }, [fetchPage]);
-
-  // Handle search submit (Enter key)
-  const handleSearchSubmit = useCallback(() => {
-    if (searchTimerRef.current) clearTimeout(searchTimerRef.current);
-    setCommittedSearch(search);
-    if (search.trim()) {
-      setMode("history");
-      fetchPage(1, search);
-    }
-  }, [search, fetchPage]);
-
-  // Handle page change
-  const handlePageChange = useCallback((page: number) => {
-    setHistoryPage(page);
-    fetchPage(page);
-    // Scroll to top of the log view
-    scrollRef.current?.scrollTo(0, 0);
-    fwScrollRef.current?.scrollTo(0, 0);
-  }, [fetchPage]);
-
-  // Go live
-  const goLive = useCallback(() => {
-    setMode("live");
-    setAutoScroll(true);
-    setHistoryPage(1);
-  }, []);
-
-  // When filters change in history mode, re-fetch
-  useEffect(() => {
-    if (mode === "history") {
-      fetchPage(1);
-    }
-  }, [severity, sourceFilter, mode, fetchPage]);
 
   // Check polling status
   const checkStatus = useCallback(async () => {
@@ -422,9 +247,9 @@ export default function Home() {
     es.onmessage = (event) => {
       const data = JSON.parse(event.data);
       if (data.type === "init") {
-        setLiveLogs(data.logs);
+        setLogs(data.logs);
       } else if (data.type === "log") {
-        setLiveLogs((prev) => {
+        setLogs((prev) => {
           const next = [...prev, data.entry];
           if (next.length > 500) return next.slice(-500);
           return next;
@@ -467,29 +292,27 @@ export default function Home() {
     return () => ro.disconnect();
   }, []);
 
-  // Auto-scroll to bottom when new logs arrive (live mode only)
+  // Auto-scroll to bottom when new logs arrive
   useEffect(() => {
-    if (mode === "live" && autoScroll && scrollRef.current) {
+    if (autoScroll && scrollRef.current) {
       const el = scrollRef.current;
       el.scrollTop = el.scrollHeight;
     }
-  }, [liveLogs, autoScroll, mode]);
+  }, [logs, autoScroll]);
 
   // Track scroll position for virtual scrolling
   const handleScroll = useCallback(() => {
     const el = scrollRef.current;
     if (!el) return;
     setScrollTop(el.scrollTop);
-    if (mode === "live") {
-      const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < ROW_HEIGHT * 2;
-      if (!atBottom && autoScroll) setAutoScroll(false);
-    }
-  }, [autoScroll, mode]);
+    // Disable auto-scroll if user scrolls up
+    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < ROW_HEIGHT * 2;
+    if (!atBottom && autoScroll) setAutoScroll(false);
+  }, [autoScroll]);
 
-  // Client-side filtered logs for live mode (All Logs tab)
+  // Client-side filtered logs (for All Logs tab)
   const filteredLogs = useMemo(() => {
-    if (mode === "history") return displayLogs; // Already filtered server-side
-    return displayLogs.filter((log) => {
+    return logs.filter((log) => {
       if (severity && log.severity !== severity) return false;
       if (sourceFilter) {
         const q = sourceFilter.toLowerCase();
@@ -501,22 +324,20 @@ export default function Home() {
       }
       return true;
     });
-  }, [displayLogs, severity, search, sourceFilter, mode]);
+  }, [logs, severity, search, sourceFilter]);
 
-  // Firewall logs
+  // Firewall logs: filter by severity+search first, then by parsed SRC/DST for sourceFilter
   const firewallLogs = useMemo(() => {
-    return displayLogs.filter((log) => {
+    return logs.filter((log) => {
       if (!isFirewallLog(log)) return false;
-      if (mode === "live") {
-        if (severity && log.severity !== severity) return false;
-        if (search) {
-          const q = search.toLowerCase();
-          if (!log.message.toLowerCase().includes(q) && !log.host.toLowerCase().includes(q) && !log.raw.toLowerCase().includes(q)) return false;
-        }
+      if (severity && log.severity !== severity) return false;
+      if (search) {
+        const q = search.toLowerCase();
+        if (!log.message.toLowerCase().includes(q) && !log.host.toLowerCase().includes(q) && !log.raw.toLowerCase().includes(q)) return false;
       }
       return true;
     });
-  }, [displayLogs, severity, search, mode]);
+  }, [logs, severity, search]);
 
   const firewallParsed = useMemo(() => {
     const parsed = firewallLogs.map((log) => ({ log, fw: parseFirewallMessage(log.message)! }));
@@ -529,7 +350,7 @@ export default function Home() {
     });
   }, [firewallLogs, fwIp, fwIpScope]);
 
-  // Virtual scroll for all logs tab
+  // Virtual scroll calculations for all logs tab
   const virtualData = useMemo(() => {
     const totalHeight = filteredLogs.length * ROW_HEIGHT;
     const startIdx = Math.max(0, Math.floor(scrollTop / ROW_HEIGHT) - OVERSCAN);
@@ -538,7 +359,7 @@ export default function Home() {
     return { totalHeight, startIdx, endIdx, offsetTop, visibleLogs: filteredLogs.slice(startIdx, endIdx) };
   }, [filteredLogs, scrollTop, viewHeight]);
 
-  // Virtual scroll for firewall tab
+  // Virtual scroll calculations for firewall tab
   const fwVirtualData = useMemo(() => {
     const totalHeight = firewallParsed.length * ROW_HEIGHT;
     const startIdx = Math.max(0, Math.floor(fwScrollTop / ROW_HEIGHT) - OVERSCAN);
@@ -562,30 +383,25 @@ export default function Home() {
     const el = fwScrollRef.current;
     if (!el) return;
     setFwScrollTop(el.scrollTop);
-    if (mode === "live") {
-      const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < ROW_HEIGHT * 2;
-      if (!atBottom && autoScroll) setAutoScroll(false);
-    }
-  }, [autoScroll, mode]);
+    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < ROW_HEIGHT * 2;
+    if (!atBottom && autoScroll) setAutoScroll(false);
+  }, [autoScroll]);
 
   // Auto-scroll firewall tab
   useEffect(() => {
-    if (mode === "live" && autoScroll && activeTab === "firewall" && fwScrollRef.current) {
+    if (autoScroll && activeTab === "firewall" && fwScrollRef.current) {
       fwScrollRef.current.scrollTop = fwScrollRef.current.scrollHeight;
     }
-  }, [firewallLogs, autoScroll, activeTab, mode]);
+  }, [firewallLogs, autoScroll, activeTab]);
 
   const handleClear = async () => {
     await fetch("/api/logs", { method: "DELETE" });
-    setLiveLogs([]);
-    setHistoryLogs([]);
-    setHistoryTotal(0);
-    setHistoryTotalPages(1);
+    setLogs([]);
   };
+  
 
   const notConfigured = pollStatus && !pollStatus.configured;
   const hasError = connectionError || pollStatus?.lastError;
-  const totalCount = mode === "history" ? historyTotal : (pollStatus?.logCount ?? liveLogs.length);
 
   return (
     <div className="flex flex-col h-screen bg-gray-950 text-gray-100">
@@ -638,17 +454,9 @@ export default function Home() {
           {pollStatus?.polling && (
             <span className="text-xs text-green-400">Polling active</span>
           )}
-          <span className="text-sm text-gray-400" suppressHydrationWarning>
-            {activeTab === "firewall"
-              ? `${firewallParsed.length} firewall`
-              : `${filteredLogs.length} shown`}
-            {mode === "history" && ` of ${historyTotal.toLocaleString()}`}
+          <span className="text-sm text-gray-400">
+            {activeTab === "firewall" ? `${firewallLogs.length} firewall` : filteredLogs.length} entries
           </span>
-          {mode === "history" && (
-            <span className="text-xs bg-blue-900/60 text-blue-300 px-2 py-0.5 rounded">
-              History · Page {historyPage}
-            </span>
-          )}
         </div>
         <div className="flex items-center gap-3">
           <button
@@ -665,40 +473,27 @@ export default function Home() {
           >
             Clear
           </button>
-          {mode === "live" && (
-            <label className="flex items-center gap-1.5 text-sm text-gray-400 cursor-pointer">
-              <input
-                type="checkbox"
-                checked={autoScroll}
-                onChange={(e) => setAutoScroll(e.target.checked)}
-                className="accent-blue-500"
-              />
-              Auto-scroll
-            </label>
-          )}
+          <label className="flex items-center gap-1.5 text-sm text-gray-400 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={autoScroll}
+              onChange={(e) => setAutoScroll(e.target.checked)}
+              className="accent-blue-500"
+            />
+            Auto-scroll
+          </label>
         </div>
       </header>
 
       {/* Filter bar */}
       <div className="flex items-center gap-3 px-6 py-2 bg-gray-900/50 border-b border-gray-800">
-        <div className="relative">
-          <input
-            type="text"
-            placeholder="Search all logs..."
-            value={search}
-            onChange={(e) => handleSearchChange(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && handleSearchSubmit()}
-            className="px-3 py-1.5 pr-8 text-sm bg-gray-800 border border-gray-700 rounded-md focus:outline-none focus:border-blue-500 w-64"
-          />
-          {search && (
-            <button
-              onClick={() => { setSearch(""); setCommittedSearch(""); if (mode === "history" && !severity && !sourceFilter) goLive(); else if (mode === "history") fetchPage(1, ""); }}
-              className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-500 hover:text-gray-300"
-            >
-              ✕
-            </button>
-          )}
-        </div>
+        <input
+          type="text"
+          placeholder="Search logs..."
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          className="px-3 py-1.5 text-sm bg-gray-800 border border-gray-700 rounded-md focus:outline-none focus:border-blue-500 w-56"
+        />
         {activeTab === "firewall" ? (
           <>
             <input
@@ -744,17 +539,12 @@ export default function Home() {
         </select>
         {(search || sourceFilter || fwIp || severity) && (
           <button
-            onClick={() => {
-              setSearch(""); setCommittedSearch(""); setSourceFilter("");
-              setFwIp(""); setFwIpScope("either"); setSeverity("");
-              if (mode === "history") goLive();
-            }}
+            onClick={() => { setSearch(""); setSourceFilter(""); setFwIp(""); setFwIpScope("either"); setSeverity(""); }}
             className="px-2 py-1 text-xs text-gray-400 hover:text-white transition-colors"
           >
             Clear filters
           </button>
         )}
-        {historyLoading && <Spinner className="text-blue-400" />}
       </div>
 
       {/* Tab bar */}
@@ -768,8 +558,8 @@ export default function Home() {
           }`}
         >
           Firewall
-          {firewallParsed.length > 0 && (
-            <span className="text-xs bg-gray-700 px-1.5 py-0.5 rounded-full">{firewallParsed.length}</span>
+          {firewallLogs.length > 0 && (
+            <span className="text-xs bg-gray-700 px-1.5 py-0.5 rounded-full">{firewallLogs.length}</span>
           )}
         </button>
         <button
@@ -803,18 +593,11 @@ export default function Home() {
             >
               {filteredLogs.length === 0 ? (
                 <div className="px-3 py-12 text-center text-gray-500">
-                  {historyLoading ? (
-                    <div className="flex flex-col items-center gap-3">
-                      <Spinner className="h-6 w-6 text-gray-400" />
-                      <span>Loading...</span>
-                    </div>
-                  ) : isConnecting && mode === "live" ? (
+                  {isConnecting ? (
                     <div className="flex flex-col items-center gap-3">
                       <Spinner className="h-6 w-6 text-gray-400" />
                       <span>Connecting to log stream...</span>
                     </div>
-                  ) : committedSearch ? (
-                    `No results for "${committedSearch}"`
                   ) : notConfigured ? (
                     "Configure .env.local with your UniFi controller credentials to get started."
                   ) : (
@@ -860,16 +643,7 @@ export default function Home() {
             >
               {firewallParsed.length === 0 ? (
                 <div className="px-3 py-12 text-center text-gray-500">
-                  {historyLoading ? (
-                    <div className="flex flex-col items-center gap-3">
-                      <Spinner className="h-6 w-6 text-gray-400" />
-                      <span>Loading...</span>
-                    </div>
-                  ) : committedSearch ? (
-                    `No firewall results for "${committedSearch}"`
-                  ) : (
-                    "No firewall log entries yet."
-                  )}
+                  No firewall log entries yet.
                 </div>
               ) : (
                 <div style={{ height: fwVirtualData.totalHeight, position: "relative" }}>
@@ -890,16 +664,6 @@ export default function Home() {
           </>
         )}
       </div>
-
-      {/* Pagination bar */}
-      <PaginationBar
-        page={historyPage}
-        totalPages={historyTotalPages}
-        total={totalCount}
-        onPageChange={handlePageChange}
-        isLive={mode === "live"}
-        onGoLive={goLive}
-      />
     </div>
   );
 }

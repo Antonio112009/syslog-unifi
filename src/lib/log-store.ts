@@ -1,6 +1,7 @@
-import fs from "fs";
-import path from "path";
+import crypto from "crypto";
+import { getDb, migrateFromJson } from "./db";
 import type { UniFiLogEntry } from "./unifi-client";
+import type { SyslogMessage } from "./syslog-server";
 
 export interface SyslogEntry {
   id: string;
@@ -15,37 +16,29 @@ export interface SyslogEntry {
   key: string;
 }
 
-const MAX_LOGS = 10000;
-const DATA_DIR = path.join(process.cwd(), "data");
-const LOG_FILE = path.join(DATA_DIR, "syslogs.json");
+export interface PaginatedLogs {
+  logs: SyslogEntry[];
+  total: number;
+  page: number;
+  pageSize: number;
+  totalPages: number;
+}
 
-let logs: SyslogEntry[] = [];
-let seenIds = new Set<string>();
 let listeners: Set<(entry: SyslogEntry) => void> = new Set();
 
-function ensureDataDir() {
-  if (!fs.existsSync(DATA_DIR)) {
-    fs.mkdirSync(DATA_DIR, { recursive: true });
-  }
-}
-
-export function loadLogs(): void {
-  ensureDataDir();
-  try {
-    if (fs.existsSync(LOG_FILE)) {
-      const data = fs.readFileSync(LOG_FILE, "utf-8");
-      logs = JSON.parse(data);
-      seenIds = new Set(logs.map((l) => l.id));
-    }
-  } catch {
-    logs = [];
-    seenIds = new Set();
-  }
-}
-
-function saveLogs(): void {
-  ensureDataDir();
-  fs.writeFileSync(LOG_FILE, JSON.stringify(logs));
+function rowToEntry(row: Record<string, unknown>): SyslogEntry {
+  return {
+    id: row.id as string,
+    timestamp: row.timestamp as string,
+    facility: row.facility as string,
+    severity: row.severity as string,
+    host: row.host as string,
+    message: row.message as string,
+    raw: row.raw as string,
+    receivedAt: row.received_at as string,
+    subsystem: row.subsystem as string,
+    key: row.key as string,
+  };
 }
 
 function guessSeverity(key: string, msg: string): string {
@@ -59,74 +52,169 @@ function guessSeverity(key: string, msg: string): string {
   return "notice";
 }
 
+/** Escape user input for FTS5 MATCH queries */
+function ftsEscape(query: string): string {
+  return '"' + query.replace(/"/g, '""') + '"';
+}
+
+export function loadLogs(): void {
+  getDb(); // Ensure DB is initialized
+  migrateFromJson();
+}
+
 export function ingestUniFiLogs(unifiLogs: UniFiLogEntry[]): number {
+  const db = getDb();
   let newCount = 0;
 
-  // Process oldest first so they appear in order
   const sorted = [...unifiLogs].sort((a, b) => a.time - b.time);
 
-  for (const log of sorted) {
-    if (seenIds.has(log._id)) continue;
+  const insert = db.prepare(`
+    INSERT OR IGNORE INTO logs (id, timestamp, facility, severity, host, message, raw, received_at, subsystem, key)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
 
-    const entry: SyslogEntry = {
-      id: log._id,
-      timestamp: log.datetime || new Date(log.time).toISOString(),
-      facility: log.subsystem || "system",
-      severity: guessSeverity(log.key || "", log.msg || ""),
-      host: log.hostname || log.ip || "controller",
-      message: log.msg || log.key || "",
-      raw: JSON.stringify(log),
-      receivedAt: new Date().toISOString(),
-      subsystem: log.subsystem || "",
-      key: log.key || "",
-    };
+  const tx = db.transaction(() => {
+    for (const log of sorted) {
+      const entry: SyslogEntry = {
+        id: log._id,
+        timestamp: log.datetime || new Date(log.time).toISOString(),
+        facility: log.subsystem || "system",
+        severity: guessSeverity(log.key || "", log.msg || ""),
+        host: log.hostname || log.ip || "controller",
+        message: log.msg || log.key || "",
+        raw: JSON.stringify(log),
+        receivedAt: new Date().toISOString(),
+        subsystem: log.subsystem || "",
+        key: log.key || "",
+      };
 
-    logs.push(entry);
-    seenIds.add(log._id);
-    newCount++;
+      const result = insert.run(
+        entry.id, entry.timestamp, entry.facility, entry.severity, entry.host,
+        entry.message, entry.raw, entry.receivedAt, entry.subsystem, entry.key
+      );
 
-    for (const listener of listeners) {
-      listener(entry);
+      if (result.changes > 0) {
+        newCount++;
+        for (const listener of listeners) {
+          listener(entry);
+        }
+      }
     }
-  }
+  });
 
-  if (newCount > 0) {
-    if (logs.length > MAX_LOGS) {
-      const removed = logs.splice(0, logs.length - MAX_LOGS);
-      for (const r of removed) seenIds.delete(r.id);
-    }
-    saveLogs();
-  }
-
+  tx();
   return newCount;
 }
 
+export function ingestSyslogMessage(msg: SyslogMessage): number {
+  const db = getDb();
+  const id = crypto.randomUUID();
+
+  const entry: SyslogEntry = {
+    id,
+    timestamp: msg.timestamp,
+    facility: msg.facility,
+    severity: msg.severity,
+    host: msg.host,
+    message: msg.message,
+    raw: msg.raw,
+    receivedAt: new Date().toISOString(),
+    subsystem: msg.facility,
+    key: "",
+  };
+
+  const insert = db.prepare(`
+    INSERT OR IGNORE INTO logs (id, timestamp, facility, severity, host, message, raw, received_at, subsystem, key)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+
+  const result = insert.run(
+    entry.id, entry.timestamp, entry.facility, entry.severity, entry.host,
+    entry.message, entry.raw, entry.receivedAt, entry.subsystem, entry.key
+  );
+
+  if (result.changes > 0) {
+    for (const listener of listeners) {
+      listener(entry);
+    }
+    return 1;
+  }
+  return 0;
+}
+
+/** Get logs with server-side pagination, filtering, and FTS search */
 export function getLogs(
+  page = 1,
+  pageSize = 100,
+  severity?: string,
+  search?: string,
+  source?: string
+): PaginatedLogs {
+  const db = getDb();
+  const conditions: string[] = [];
+  const params: unknown[] = [];
+
+  // If there's a search query, use FTS5
+  let usesFts = false;
+  if (search && search.trim()) {
+    usesFts = true;
+    conditions.push("logs_fts MATCH ?");
+    params.push(ftsEscape(search.trim()));
+  }
+
+  if (severity) {
+    conditions.push("logs.severity = ?");
+    params.push(severity);
+  }
+
+  if (source) {
+    conditions.push("logs.host LIKE ?");
+    params.push(`%${source}%`);
+  }
+
+  const joinClause = usesFts
+    ? "INNER JOIN logs_fts ON logs.rowid = logs_fts.rowid"
+    : "";
+  const whereClause = conditions.length > 0
+    ? "WHERE " + conditions.join(" AND ")
+    : "";
+
+  // Get total count
+  const countSql = `SELECT COUNT(*) as c FROM logs ${joinClause} ${whereClause}`;
+  const total = (db.prepare(countSql).get(...params) as { c: number }).c;
+
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
+  const safePage = Math.max(1, Math.min(page, totalPages));
+  const offset = (safePage - 1) * pageSize;
+
+  // Page 1 = newest, so ORDER BY rowid DESC, then reverse for display
+  const dataSql = `
+    SELECT logs.* FROM logs ${joinClause} ${whereClause}
+    ORDER BY logs.rowid DESC
+    LIMIT ? OFFSET ?
+  `;
+  const rows = db.prepare(dataSql).all(...params, pageSize, offset) as Record<string, unknown>[];
+
+  // Reverse so within a page, oldest is at top (natural reading order)
+  const logs = rows.map(rowToEntry).reverse();
+
+  return { logs, total, page: safePage, pageSize, totalPages };
+}
+
+/** Get the most recent N logs (for SSE init) */
+export function getRecentLogs(
   limit = 200,
   severity?: string,
-  search?: string
+  search?: string,
+  source?: string
 ): SyslogEntry[] {
-  let filtered = logs;
-  if (severity) {
-    filtered = filtered.filter((l) => l.severity === severity);
-  }
-  if (search) {
-    const q = search.toLowerCase();
-    filtered = filtered.filter(
-      (l) =>
-        l.message.toLowerCase().includes(q) ||
-        l.host.toLowerCase().includes(q) ||
-        l.key.toLowerCase().includes(q) ||
-        l.subsystem.toLowerCase().includes(q)
-    );
-  }
-  return filtered.slice(-limit);
+  const result = getLogs(1, limit, severity, search, source);
+  return result.logs;
 }
 
 export function clearLogs(): void {
-  logs = [];
-  seenIds = new Set();
-  saveLogs();
+  const db = getDb();
+  db.exec("DELETE FROM logs");
 }
 
 export function subscribe(listener: (entry: SyslogEntry) => void): () => void {
@@ -135,5 +223,6 @@ export function subscribe(listener: (entry: SyslogEntry) => void): () => void {
 }
 
 export function getLogCount(): number {
-  return logs.length;
+  const db = getDb();
+  return (db.prepare("SELECT COUNT(*) as c FROM logs").get() as { c: number }).c;
 }

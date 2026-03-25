@@ -1,7 +1,14 @@
 import { login, fetchSystemLogs, fetchEvents, isConfigured } from "@/lib/unifi-client";
-import { ingestUniFiLogs, loadLogs, getLogCount } from "@/lib/log-store";
+import { ingestUniFiLogs, ingestSyslogMessage, loadLogs, getLogCount } from "@/lib/log-store";
+import { startSyslogServer, onSyslogMessage, getSyslogStatus } from "@/lib/syslog-server";
 
 loadLogs();
+
+// Start syslog receiver and wire it to the log store
+startSyslogServer();
+onSyslogMessage((msg) => {
+  ingestSyslogMessage(msg);
+});
 
 let isPolling = false;
 let pollInterval: ReturnType<typeof setInterval> | null = null;
@@ -12,9 +19,10 @@ let loggedIn = false;
 async function doPoll(): Promise<{ newLogs: number; total: number; error?: string }> {
   try {
     if (!loggedIn) {
-      loggedIn = await login();
+      const result = await login();
+      loggedIn = result.ok;
       if (!loggedIn) {
-        lastError = "Login failed - check credentials";
+        lastError = result.error || "Login failed - check credentials";
         return { newLogs: 0, total: getLogCount(), error: lastError };
       }
     }
@@ -24,6 +32,7 @@ async function doPoll(): Promise<{ newLogs: number; total: number; error?: strin
       fetchEvents(200),
     ]);
 
+    console.log(`Poll: fetched ${sysLogs.length} syslogs, ${events.length} events`);
     const newSys = ingestUniFiLogs(sysLogs);
     const newEvt = ingestUniFiLogs(events);
 
@@ -61,12 +70,14 @@ export async function POST() {
 
 // GET /api/poll - get polling status
 export async function GET() {
+  const syslogStatus = getSyslogStatus();
   return Response.json({
     configured: isConfigured(),
     polling: isPolling,
     lastPollTime,
     lastError,
     logCount: getLogCount(),
+    syslog: syslogStatus,
   });
 }
 
