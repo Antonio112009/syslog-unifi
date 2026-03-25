@@ -57,6 +57,17 @@ interface ParsedFirewall {
   mac: string;
 }
 
+const FW_KV_REGEXES: Record<string, RegExp> = {
+  IN: /IN=([^\s]*)/,
+  SRC: /SRC=([^\s]*)/,
+  DST: /DST=([^\s]*)/,
+  PROTO: /PROTO=([^\s]*)/,
+  SPT: /SPT=([^\s]*)/,
+  DPT: /DPT=([^\s]*)/,
+  LEN: /LEN=([^\s]*)/,
+  MAC: /MAC=([^\s]*)/,
+};
+
 function parseFirewallMessage(msg: string): ParsedFirewall | null {
   const ruleMatch = msg.match(/\[([^\]]+)\]/);
   if (!ruleMatch) return null;
@@ -65,7 +76,7 @@ function parseFirewallMessage(msg: string): ParsedFirewall | null {
   const actionMap: Record<string, string> = { A: "Allow", D: "Drop", R: "Reject" };
   const action = actionMap[actionCode] || actionCode;
   const descrMatch = msg.match(/DESCR="([^"]*)"/s);
-  const kv = (key: string) => msg.match(new RegExp(`${key}=([^\\s]*)`))?.[1] || "";
+  const kv = (key: string) => msg.match(FW_KV_REGEXES[key])?.[1] || "";
   return {
     rule: ruleRaw,
     action,
@@ -624,15 +635,6 @@ export default function Home() {
     }
   }, [autoScroll, mode]);
 
-  const uniqueRules = useMemo(() => {
-    const seen = new Set<string>();
-    for (const log of displayLogs) {
-      const fw = parseFirewallMessage(log.message);
-      if (fw) seen.add(fw.descr || fw.rule);
-    }
-    return Array.from(seen).sort();
-  }, [displayLogs]);
-
   const firewallLogs = useMemo(() => {
     return displayLogs.filter((log) => {
       if (mode === "live" && filters.search) {
@@ -688,6 +690,14 @@ export default function Home() {
     }
     return parsed;
   }, [firewallLogs, filters]);
+
+  const uniqueRules = useMemo(() => {
+    const seen = new Set<string>();
+    for (const { fw } of firewallParsed) {
+      seen.add(fw.descr || fw.rule);
+    }
+    return Array.from(seen).sort();
+  }, [firewallParsed]);
 
   const virtualData = useMemo(() => {
     const totalHeight = firewallParsed.length * ROW_HEIGHT;

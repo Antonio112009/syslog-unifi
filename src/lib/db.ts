@@ -7,6 +7,65 @@ const DB_PATH = path.join(DATA_DIR, "syslogs.db");
 
 let _db: Database.Database | null = null;
 
+export interface FirewallFields {
+  fw_action: string;
+  fw_proto: string;
+  fw_src: string;
+  fw_dst: string;
+  fw_spt: string;
+  fw_dpt: string;
+  fw_rule: string;
+  fw_rule_descr: string;
+}
+
+const FW_KV_RE: Record<string, RegExp> = {
+  PROTO: /PROTO=(\S*)/,
+  SRC: /SRC=(\S*)/,
+  DST: /DST=(\S*)/,
+  SPT: /SPT=(\S*)/,
+  DPT: /DPT=(\S*)/,
+};
+
+/** Extract firewall fields from a syslog message. Returns empty strings for non-firewall messages. */
+export function extractFirewallFields(message: string): FirewallFields {
+  const empty: FirewallFields = { fw_action: "", fw_proto: "", fw_src: "", fw_dst: "", fw_spt: "", fw_dpt: "", fw_rule: "", fw_rule_descr: "" };
+  const ruleMatch = message.match(/\[([^\]]+)\]/);
+  if (!ruleMatch) return empty;
+  const ruleRaw = ruleMatch[1];
+  const actionCode = ruleRaw.match(/-([ADR])-/)?.[1] || "";
+  if (!actionCode) return empty;
+  const actionMap: Record<string, string> = { A: "Allow", D: "Drop", R: "Reject" };
+  const descrMatch = message.match(/DESCR="([^"]*)"/);
+  return {
+    fw_action: actionMap[actionCode] || "",
+    fw_proto: message.match(FW_KV_RE.PROTO)?.[1] || "",
+    fw_src: message.match(FW_KV_RE.SRC)?.[1] || "",
+    fw_dst: message.match(FW_KV_RE.DST)?.[1] || "",
+    fw_spt: message.match(FW_KV_RE.SPT)?.[1] || "",
+    fw_dpt: message.match(FW_KV_RE.DPT)?.[1] || "",
+    fw_rule: ruleRaw,
+    fw_rule_descr: descrMatch?.[1]?.replace(/^\[[^\]]*\]/, "") || "",
+  };
+}
+
+function backfillFirewallColumns(db: Database.Database): void {
+  const rows = db.prepare(
+    `SELECT rowid, message FROM logs WHERE fw_action = '' AND (message LIKE '[%-A-%]%' OR message LIKE '[%-D-%]%' OR message LIKE '[%-R-%]%')`
+  ).all() as { rowid: number; message: string }[];
+  if (rows.length === 0) return;
+  const update = db.prepare(
+    `UPDATE logs SET fw_action=?, fw_proto=?, fw_src=?, fw_dst=?, fw_spt=?, fw_dpt=?, fw_rule=?, fw_rule_descr=? WHERE rowid=?`
+  );
+  const tx = db.transaction(() => {
+    for (const row of rows) {
+      const fw = extractFirewallFields(row.message);
+      update.run(fw.fw_action, fw.fw_proto, fw.fw_src, fw.fw_dst, fw.fw_spt, fw.fw_dpt, fw.fw_rule, fw.fw_rule_descr, row.rowid);
+    }
+  });
+  tx();
+  console.log(`[db] Backfilled firewall columns for ${rows.length} rows`);
+}
+
 export function getDb(): Database.Database {
   if (_db) return _db;
 
@@ -32,7 +91,15 @@ export function getDb(): Database.Database {
       raw TEXT NOT NULL,
       received_at TEXT NOT NULL,
       subsystem TEXT NOT NULL,
-      key TEXT NOT NULL
+      key TEXT NOT NULL,
+      fw_action TEXT NOT NULL DEFAULT '',
+      fw_proto TEXT NOT NULL DEFAULT '',
+      fw_src TEXT NOT NULL DEFAULT '',
+      fw_dst TEXT NOT NULL DEFAULT '',
+      fw_spt TEXT NOT NULL DEFAULT '',
+      fw_dpt TEXT NOT NULL DEFAULT '',
+      fw_rule TEXT NOT NULL DEFAULT '',
+      fw_rule_descr TEXT NOT NULL DEFAULT ''
     );
 
     CREATE INDEX IF NOT EXISTS idx_logs_timestamp ON logs(timestamp);
@@ -54,6 +121,34 @@ export function getDb(): Database.Database {
       INSERT INTO logs_fts(logs_fts, rowid, message, host, subsystem, key)
       VALUES('delete', old.rowid, old.message, old.host, old.subsystem, old.key);
     END;
+  `);
+
+  // Migration: add firewall columns to existing databases
+  const cols = db.pragma("table_info(logs)") as { name: string }[];
+  const colNames = new Set(cols.map((c) => c.name));
+  if (!colNames.has("fw_action")) {
+    db.exec(`
+      ALTER TABLE logs ADD COLUMN fw_action TEXT NOT NULL DEFAULT '';
+      ALTER TABLE logs ADD COLUMN fw_proto TEXT NOT NULL DEFAULT '';
+      ALTER TABLE logs ADD COLUMN fw_src TEXT NOT NULL DEFAULT '';
+      ALTER TABLE logs ADD COLUMN fw_dst TEXT NOT NULL DEFAULT '';
+      ALTER TABLE logs ADD COLUMN fw_spt TEXT NOT NULL DEFAULT '';
+      ALTER TABLE logs ADD COLUMN fw_dpt TEXT NOT NULL DEFAULT '';
+      ALTER TABLE logs ADD COLUMN fw_rule TEXT NOT NULL DEFAULT '';
+      ALTER TABLE logs ADD COLUMN fw_rule_descr TEXT NOT NULL DEFAULT '';
+      CREATE INDEX IF NOT EXISTS idx_logs_fw_action ON logs(fw_action) WHERE fw_action != '';
+      CREATE INDEX IF NOT EXISTS idx_logs_fw_proto ON logs(fw_proto) WHERE fw_proto != '';
+      CREATE INDEX IF NOT EXISTS idx_logs_fw_rule ON logs(fw_rule) WHERE fw_rule != '';
+    `);
+    // Backfill existing rows
+    backfillFirewallColumns(db);
+  }
+
+  // Create firewall indexes (after migration ensures columns exist)
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_logs_fw_action ON logs(fw_action) WHERE fw_action != '';
+    CREATE INDEX IF NOT EXISTS idx_logs_fw_proto ON logs(fw_proto) WHERE fw_proto != '';
+    CREATE INDEX IF NOT EXISTS idx_logs_fw_rule ON logs(fw_rule) WHERE fw_rule != '';
   `);
 
   _db = db;

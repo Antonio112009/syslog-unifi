@@ -66,14 +66,12 @@ Open [http://localhost:3000](http://localhost:3000) to view the dashboard.
 
 ## Architecture
 
-```
-UniFi Device ──UDP/TCP──▶ Syslog Server ──▶ SQLite (FTS5)
-                              │
-                              ▼
-                        Next.js API (SSE)
-                              │
-                              ▼
-                        React Dashboard
+```mermaid
+flowchart LR
+    A[UniFi Device] -- UDP/TCP --> B[Syslog Server]
+    B --> C[(SQLite FTS5)]
+    C --> D[Next.js API\nSSE]
+    D --> E[React Dashboard]
 ```
 
 - **Syslog Server** (`src/lib/syslog-server.ts`) — listens on UDP + TCP, parses multiple syslog formats

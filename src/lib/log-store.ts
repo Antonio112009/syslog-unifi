@@ -1,5 +1,6 @@
 import crypto from "crypto";
-import { getDb, migrateFromJson } from "./db";
+import Database from "better-sqlite3";
+import { getDb, migrateFromJson, extractFirewallFields } from "./db";
 import type { SyslogMessage } from "./syslog-server";
 
 export interface SyslogEntry {
@@ -50,8 +51,19 @@ export function loadLogs(): void {
   migrateFromJson();
 }
 
+let _insertStmt: Database.Statement | null = null;
+
+function getInsertStmt() {
+  if (!_insertStmt) {
+    _insertStmt = getDb().prepare(`
+      INSERT OR IGNORE INTO logs (id, timestamp, facility, severity, host, message, raw, received_at, subsystem, key, fw_action, fw_proto, fw_src, fw_dst, fw_spt, fw_dpt, fw_rule, fw_rule_descr)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+  }
+  return _insertStmt;
+}
+
 export function ingestSyslogMessage(msg: SyslogMessage): number {
-  const db = getDb();
   const id = crypto.randomUUID();
 
   const entry: SyslogEntry = {
@@ -67,14 +79,13 @@ export function ingestSyslogMessage(msg: SyslogMessage): number {
     key: "",
   };
 
-  const insert = db.prepare(`
-    INSERT OR IGNORE INTO logs (id, timestamp, facility, severity, host, message, raw, received_at, subsystem, key)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `);
+  const fw = extractFirewallFields(msg.message);
+  const insert = getInsertStmt();
 
   const result = insert.run(
     entry.id, entry.timestamp, entry.facility, entry.severity, entry.host,
-    entry.message, entry.raw, entry.receivedAt, entry.subsystem, entry.key
+    entry.message, entry.raw, entry.receivedAt, entry.subsystem, entry.key,
+    fw.fw_action, fw.fw_proto, fw.fw_src, fw.fw_dst, fw.fw_spt, fw.fw_dpt, fw.fw_rule, fw.fw_rule_descr
   );
 
   if (result.changes > 0) {
@@ -130,28 +141,24 @@ export function getLogs(
   }
 
   if (firewallOnly) {
-    conditions.push("(logs.message LIKE '[%-A-%]%' OR logs.message LIKE '[%-D-%]%' OR logs.message LIKE '[%-R-%]%')");
+    conditions.push("logs.fw_action != ''");
   }
 
-  // Firewall field filters
+  // Firewall field filters — use indexed columns
   if (filterOptions) {
     if (filterOptions.action) {
-      const actionCode: Record<string, string> = { Allow: "A", Drop: "D", Reject: "R" };
-      const code = actionCode[filterOptions.action];
-      if (code) {
-        conditions.push("logs.message LIKE ?");
-        params.push(`[%-${code}-%]%`);
-      }
+      conditions.push("logs.fw_action = ?");
+      params.push(filterOptions.action);
     }
 
     if (filterOptions.proto) {
-      conditions.push("logs.message LIKE ?");
-      params.push(`%PROTO=${filterOptions.proto}%`);
+      conditions.push("logs.fw_proto = ?");
+      params.push(filterOptions.proto);
     }
 
     if (filterOptions.rule) {
-      conditions.push("(logs.message LIKE ? OR logs.message LIKE ?)");
-      params.push(`%${filterOptions.rule}%`, `%DESCR="%${filterOptions.rule}%"%`);
+      conditions.push("(logs.fw_rule LIKE ? OR logs.fw_rule_descr LIKE ?)");
+      params.push(`%${filterOptions.rule}%`, `%${filterOptions.rule}%`);
     }
 
     const hasSrc = !!(filterOptions.srcIp || filterOptions.srcPort);
@@ -161,23 +168,23 @@ export function getLogs(
       const srcParts: string[] = [];
       const srcParams: unknown[] = [];
       if (filterOptions.srcIp) {
-        srcParts.push("logs.message LIKE ?");
-        srcParams.push(`%SRC=%${filterOptions.srcIp}%`);
+        srcParts.push("logs.fw_src LIKE ?");
+        srcParams.push(`%${filterOptions.srcIp}%`);
       }
       if (filterOptions.srcPort) {
-        srcParts.push("logs.message LIKE ?");
-        srcParams.push(`%SPT=${filterOptions.srcPort} %`);
+        srcParts.push("logs.fw_spt = ?");
+        srcParams.push(filterOptions.srcPort);
       }
 
       const dstParts: string[] = [];
       const dstParams: unknown[] = [];
       if (filterOptions.dstIp) {
-        dstParts.push("logs.message LIKE ?");
-        dstParams.push(`%DST=%${filterOptions.dstIp}%`);
+        dstParts.push("logs.fw_dst LIKE ?");
+        dstParams.push(`%${filterOptions.dstIp}%`);
       }
       if (filterOptions.dstPort) {
-        dstParts.push("logs.message LIKE ?");
-        dstParams.push(`%DPT=${filterOptions.dstPort} %`);
+        dstParts.push("logs.fw_dpt = ?");
+        dstParams.push(filterOptions.dstPort);
       }
 
       const srcCond = srcParts.length > 0 ? `(${srcParts.join(" AND ")})` : null;
@@ -240,33 +247,31 @@ export function getRecentLogs(
   return result.logs;
 }
 
+let _rulesCache: { rules: string[]; timestamp: number } | null = null;
+const RULES_CACHE_TTL = 10_000; // 10 seconds
+
 /** Get all distinct rule names from firewall log messages */
 export function getDistinctRules(): string[] {
+  const now = Date.now();
+  if (_rulesCache && now - _rulesCache.timestamp < RULES_CACHE_TTL) {
+    return _rulesCache.rules;
+  }
+
   const db = getDb();
-  // Grab every distinct message that looks like a firewall log
   const rows = db
     .prepare(
-      `SELECT DISTINCT message FROM logs
-       WHERE message LIKE '[%-A-%]%' OR message LIKE '[%-D-%]%' OR message LIKE '[%-R-%]%'`
+      `SELECT DISTINCT CASE WHEN fw_rule_descr != '' THEN fw_rule_descr ELSE fw_rule END AS name
+       FROM logs WHERE fw_action != '' ORDER BY name`
     )
-    .all() as { message: string }[];
+    .all() as { name: string }[];
 
-  const seen = new Set<string>();
-  const descrRe = /DESCR="([^"]+)"/;
-  const ruleRe = /^\[([^\]]+)\]/;
-  for (const { message } of rows) {
-    const dm = descrRe.exec(message);
-    if (dm) {
-      seen.add(dm[1]);
-    } else {
-      const rm = ruleRe.exec(message);
-      if (rm) seen.add(rm[1]);
-    }
-  }
-  return Array.from(seen).sort();
+  const rules = rows.map((r) => r.name);
+  _rulesCache = { rules, timestamp: now };
+  return rules;
 }
 
 export function clearLogs(): void {
+  _rulesCache = null;
   const db = getDb();
   db.exec("DELETE FROM logs");
 }

@@ -27,7 +27,7 @@ export async function GET(request: NextRequest) {
         );
 
         const unsubscribe = subscribe((entry) => {
-          if (firewallOnly && !/^\[\w+-(A|D|R)-\d+\]/.test(entry.message)) return;
+          if (firewallOnly && !entry.message.includes("-A-") && !entry.message.includes("-D-") && !entry.message.includes("-R-")) return;
           if (severity && entry.severity !== severity) return;
           if (source) {
             const q = source.toLowerCase();

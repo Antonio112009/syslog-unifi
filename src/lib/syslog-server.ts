@@ -126,15 +126,21 @@ function parseSyslogMessage(raw: string, remoteAddress: string): SyslogMessage {
   return { facility, severity, host, message: message.trim(), timestamp, raw: trimmed };
 }
 
+function handleSyslogLine(line: string, remoteAddress: string) {
+  const trimmed = line.trim();
+  if (!trimmed) return;
+  const msg = parseSyslogMessage(trimmed, remoteAddress);
+  for (const listener of syslogListeners) {
+    listener(msg);
+  }
+}
+
 function handleSyslogData(data: Buffer, remoteAddress: string) {
   const raw = data.toString("utf-8");
   // Syslog can have multiple messages in one packet (newline-separated)
-  const lines = raw.split("\n").filter((l) => l.trim().length > 0);
+  const lines = raw.split("\n");
   for (const line of lines) {
-    const msg = parseSyslogMessage(line, remoteAddress);
-    for (const listener of syslogListeners) {
-      listener(msg);
-    }
+    handleSyslogLine(line, remoteAddress);
   }
 }
 
@@ -183,15 +189,11 @@ export function startSyslogServer(): { port: number } {
         const lines = buffer.split("\n");
         buffer = lines.pop() || "";
         for (const line of lines) {
-          if (line.trim()) {
-            handleSyslogData(Buffer.from(line), socket.remoteAddress || "unknown");
-          }
+          handleSyslogLine(line, socket.remoteAddress || "unknown");
         }
       });
       socket.on("end", () => {
-        if (buffer.trim()) {
-          handleSyslogData(Buffer.from(buffer), socket.remoteAddress || "unknown");
-        }
+        handleSyslogLine(buffer, socket.remoteAddress || "unknown");
       });
       socket.on("error", () => {
         // client disconnect, ignore
