@@ -221,7 +221,7 @@ export function getLogs(
   const safePage = Math.max(1, Math.min(page, totalPages));
   const offset = (safePage - 1) * pageSize;
 
-  // Page 1 = newest, so ORDER BY rowid DESC, then reverse for display
+  // Page 1 = newest, ORDER BY rowid DESC (newest first)
   const dataSql = `
     SELECT logs.* FROM logs ${joinClause} ${whereClause}
     ORDER BY logs.rowid DESC
@@ -229,8 +229,7 @@ export function getLogs(
   `;
   const rows = db.prepare(dataSql).all(...params, pageSize, offset) as Record<string, unknown>[];
 
-  // Reverse so within a page, oldest is at top (natural reading order)
-  const logs = rows.map(rowToEntry).reverse();
+  const logs = rows.map(rowToEntry);
 
   return { logs, total, page: safePage, pageSize, totalPages };
 }

@@ -623,8 +623,8 @@ export default function Home() {
         setLiveLogs(data.logs);
       } else if (data.type === "log") {
         setLiveLogs((prev) => {
-          const next = [...prev, data.entry];
-          if (next.length > 500) return next.slice(-500);
+          const next = [data.entry, ...prev];
+          if (next.length > 500) return next.slice(0, 500);
           return next;
         });
       }
@@ -663,7 +663,7 @@ export default function Home() {
 
   useEffect(() => {
     if (mode === "live" && autoScroll && scrollRef.current) {
-      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+      scrollRef.current.scrollTop = 0;
     }
   }, [liveLogs, autoScroll, mode]);
 
@@ -672,9 +672,8 @@ export default function Home() {
     if (!el) return;
     setScrollTop(el.scrollTop);
     if (mode === "live") {
-      const atBottom =
-        el.scrollHeight - el.scrollTop - el.clientHeight < ROW_HEIGHT * 2;
-      if (!atBottom && autoScroll) setAutoScroll(false);
+      const atTop = el.scrollTop < ROW_HEIGHT * 2;
+      if (!atTop && autoScroll) setAutoScroll(false);
     }
   }, [autoScroll, mode]);
 
