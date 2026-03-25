@@ -276,6 +276,77 @@ export function clearLogs(): void {
   db.exec("DELETE FROM logs");
 }
 
+/** Delete logs matching the given filter criteria. Returns number of deleted rows. */
+export function deleteFilteredLogs(filterOptions: FilterOptions): number {
+  const db = getDb();
+  const conditions: string[] = [];
+  const params: unknown[] = [];
+
+  if (filterOptions.action) {
+    conditions.push("fw_action = ?");
+    params.push(filterOptions.action);
+  }
+  if (filterOptions.proto) {
+    conditions.push("fw_proto = ?");
+    params.push(filterOptions.proto);
+  }
+  if (filterOptions.rule) {
+    conditions.push("(fw_rule LIKE ? OR fw_rule_descr LIKE ?)");
+    params.push(`%${filterOptions.rule}%`, `%${filterOptions.rule}%`);
+  }
+
+  const hasSrc = !!(filterOptions.srcIp || filterOptions.srcPort);
+  const hasDst = !!(filterOptions.dstIp || filterOptions.dstPort);
+
+  if (hasSrc || hasDst) {
+    const srcParts: string[] = [];
+    const srcParams: unknown[] = [];
+    if (filterOptions.srcIp) {
+      srcParts.push("fw_src LIKE ?");
+      srcParams.push(`%${filterOptions.srcIp}%`);
+    }
+    if (filterOptions.srcPort) {
+      srcParts.push("fw_spt = ?");
+      srcParams.push(filterOptions.srcPort);
+    }
+
+    const dstParts: string[] = [];
+    const dstParams: unknown[] = [];
+    if (filterOptions.dstIp) {
+      dstParts.push("fw_dst LIKE ?");
+      dstParams.push(`%${filterOptions.dstIp}%`);
+    }
+    if (filterOptions.dstPort) {
+      dstParts.push("fw_dpt = ?");
+      dstParams.push(filterOptions.dstPort);
+    }
+
+    const srcCond = srcParts.length > 0 ? `(${srcParts.join(" AND ")})` : null;
+    const dstCond = dstParts.length > 0 ? `(${dstParts.join(" AND ")})` : null;
+
+    if (filterOptions.ipMatch === "or" && srcCond && dstCond) {
+      conditions.push(`(${srcCond} OR ${dstCond})`);
+      params.push(...srcParams, ...dstParams);
+    } else {
+      if (srcCond) {
+        conditions.push(srcCond);
+        params.push(...srcParams);
+      }
+      if (dstCond) {
+        conditions.push(dstCond);
+        params.push(...dstParams);
+      }
+    }
+  }
+
+  if (conditions.length === 0) return 0;
+
+  const sql = `DELETE FROM logs WHERE ${conditions.join(" AND ")}`;
+  const result = db.prepare(sql).run(...params);
+  _rulesCache = null;
+  return result.changes;
+}
+
 export function subscribe(listener: (entry: SyslogEntry) => void): () => void {
   listeners.add(listener);
   return () => listeners.delete(listener);

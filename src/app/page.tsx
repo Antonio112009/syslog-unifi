@@ -193,21 +193,40 @@ function FilterDialog({
   activeCount,
   onClear,
   ruleOptions,
+  onDeleteFiltered,
 }: {
   filters: Filters;
   onChange: (f: Filters) => void;
   activeCount: number;
   onClear: () => void;
   ruleOptions: string[];
+  onDeleteFiltered: (f: Filters) => Promise<number>;
 }) {
   const [local, setLocal] = useState(filters);
   const [open, setOpen] = useState(false);
   const [ruleDropdownOpen, setRuleDropdownOpen] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [deleting, setDeleting] = useState(false);
   const ruleRef = useRef<HTMLDivElement>(null);
 
   const handleOpenChange = (nextOpen: boolean) => {
     if (nextOpen) setLocal(filters);
+    setConfirmDelete(false);
     setOpen(nextOpen);
+  };
+
+  const hasAnyFilter = !!(local.action || local.proto || local.srcIp || local.srcPort || local.dstIp || local.dstPort || local.rule);
+
+  const handleDelete = async () => {
+    setDeleting(true);
+    try {
+      const deleted = await onDeleteFiltered(local);
+      setConfirmDelete(false);
+      setOpen(false);
+      if (deleted > 0) onChange(local);
+    } finally {
+      setDeleting(false);
+    }
   };
 
   const apply = () => {
@@ -438,9 +457,33 @@ function FilterDialog({
           <Button variant="ghost" size="sm" onClick={clear}>
             Clear all
           </Button>
-          <Button size="sm" onClick={apply}>
-            Apply filters
-          </Button>
+          <div className="flex items-center gap-2">
+            {confirmDelete ? (
+              <>
+                <span className="text-xs text-destructive">Delete all matching?</span>
+                <Button variant="destructive" size="sm" onClick={handleDelete} disabled={deleting}>
+                  {deleting ? "Deleting..." : "Confirm"}
+                </Button>
+                <Button variant="ghost" size="sm" onClick={() => setConfirmDelete(false)}>
+                  Cancel
+                </Button>
+              </>
+            ) : (
+              <Button
+                variant="outline"
+                size="sm"
+                className="text-destructive border-destructive/30 hover:bg-destructive/10"
+                onClick={() => setConfirmDelete(true)}
+                disabled={!hasAnyFilter}
+                title={hasAnyFilter ? "Delete logs matching current filters" : "Set at least one filter to delete"}
+              >
+                Delete Matching
+              </Button>
+            )}
+            <Button size="sm" onClick={apply}>
+              Apply filters
+            </Button>
+          </div>
         </div>
       </DialogContent>
     </Dialog>
@@ -725,6 +768,22 @@ export default function Home() {
     setHistoryTotalPages(1);
   };
 
+  const handleDeleteFiltered = useCallback(async (f: Filters): Promise<number> => {
+    const params = new URLSearchParams();
+    if (f.action) params.set("action", f.action);
+    if (f.proto) params.set("proto", f.proto);
+    if (f.srcIp) params.set("srcIp", f.srcIp);
+    if (f.srcPort) params.set("srcPort", f.srcPort);
+    if (f.dstIp) params.set("dstIp", f.dstIp);
+    if (f.dstPort) params.set("dstPort", f.dstPort);
+    if (f.rule) params.set("rule", f.rule);
+    if (f.ipMatch === "or") params.set("ipMatch", "or");
+    const res = await fetch(`/api/logs?${params}`, { method: "DELETE" });
+    const data = await res.json();
+    if (mode === "history") fetchPage(historyPage);
+    return data.deleted ?? 0;
+  }, [mode, fetchPage, historyPage]);
+
   const totalCount =
     mode === "history" ? historyTotal : liveLogs.length;
 
@@ -875,6 +934,7 @@ export default function Home() {
           activeCount={activeFilterCount}
           onClear={clearAllFilters}
           ruleOptions={mode === "history" ? dbRules : uniqueRules}
+          onDeleteFiltered={handleDeleteFiltered}
         />
 
         {filterBadges.map(({ label, key }) =>

@@ -1,5 +1,5 @@
 import { NextRequest } from "next/server";
-import { getLogs, getRecentLogs, clearLogs, subscribe, loadLogs, ingestSyslogMessage } from "@/lib/log-store";
+import { getLogs, getRecentLogs, clearLogs, deleteFilteredLogs, subscribe, loadLogs, ingestSyslogMessage } from "@/lib/log-store";
 import type { FilterOptions } from "@/lib/log-store";
 import { startSyslogServer, onSyslogMessage } from "@/lib/syslog-server";
 
@@ -88,7 +88,34 @@ export async function GET(request: NextRequest) {
   return Response.json(result);
 }
 
-export async function DELETE() {
+export async function DELETE(request: NextRequest) {
+  const { searchParams } = request.nextUrl;
+  const hasFilters = ["action", "proto", "srcIp", "srcPort", "dstIp", "dstPort", "rule"].some(
+    (k) => searchParams.has(k)
+  );
+
+  if (hasFilters) {
+    const filterOptions: FilterOptions = {};
+    const action = searchParams.get("action");
+    const proto = searchParams.get("proto");
+    const srcIp = searchParams.get("srcIp");
+    const srcPort = searchParams.get("srcPort");
+    const dstIp = searchParams.get("dstIp");
+    const dstPort = searchParams.get("dstPort");
+    const rule = searchParams.get("rule");
+    const ipMatch = searchParams.get("ipMatch");
+    if (action) filterOptions.action = action;
+    if (proto) filterOptions.proto = proto;
+    if (srcIp) filterOptions.srcIp = srcIp;
+    if (srcPort) filterOptions.srcPort = srcPort;
+    if (dstIp) filterOptions.dstIp = dstIp;
+    if (dstPort) filterOptions.dstPort = dstPort;
+    if (rule) filterOptions.rule = rule;
+    if (ipMatch === "or") filterOptions.ipMatch = "or";
+    const deleted = deleteFilteredLogs(filterOptions);
+    return Response.json({ ok: true, deleted });
+  }
+
   clearLogs();
   return Response.json({ ok: true });
 }
