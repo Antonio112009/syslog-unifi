@@ -1,6 +1,7 @@
-import { getDistinctRules } from "@/lib/log-store";
+import { getDistinctRules, getDistinctProtocols } from "@/lib/log-store";
 
 export async function GET() {
   const rules = getDistinctRules();
-  return Response.json({ rules });
+  const protocols = getDistinctProtocols();
+  return Response.json({ rules, protocols });
 }

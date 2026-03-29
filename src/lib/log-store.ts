@@ -1,6 +1,9 @@
 import crypto from "crypto";
+import path from "path";
+import fs from "fs";
 import Database from "better-sqlite3";
 import { getDb, migrateFromJson, extractFirewallFields } from "./db";
+import { checkWebhookAlert } from "./webhook";
 import type { SyslogMessage } from "./syslog-server";
 
 export interface SyslogEntry {
@@ -92,10 +95,15 @@ export function ingestSyslogMessage(msg: SyslogMessage): number {
     for (const listener of listeners) {
       listener(entry);
     }
+    checkWebhookAlert(fw, entry.host, entry.timestamp);
+    _insertCounter++;
+    if (_insertCounter % 1000 === 0) purgeOldLogs();
     return 1;
   }
   return 0;
 }
+
+let _insertCounter = 0;
 
 export interface FilterOptions {
   action?: string;
@@ -349,4 +357,60 @@ export function deleteFilteredLogs(filterOptions: FilterOptions): number {
 export function subscribe(listener: (entry: SyslogEntry) => void): () => void {
   listeners.add(listener);
   return () => listeners.delete(listener);
+}
+
+// --- Retention ---
+
+const LOG_RETENTION_DAYS = parseInt(process.env.LOG_RETENTION_DAYS || "0", 10);
+
+export function purgeOldLogs(): number {
+  if (LOG_RETENTION_DAYS <= 0) return 0;
+  const db = getDb();
+  const cutoff = new Date(Date.now() - LOG_RETENTION_DAYS * 86400000).toISOString();
+  const result = db.prepare("DELETE FROM logs WHERE timestamp < ?").run(cutoff);
+  if (result.changes > 0) {
+    console.log(`[retention] Purged ${result.changes} logs older than ${LOG_RETENTION_DAYS} days`);
+    _rulesCache = null;
+  }
+  return result.changes;
+}
+
+// --- Dynamic Protocols ---
+
+let _protosCache: { protocols: string[]; timestamp: number } | null = null;
+
+export function getDistinctProtocols(): string[] {
+  const now = Date.now();
+  if (_protosCache && now - _protosCache.timestamp < RULES_CACHE_TTL) {
+    return _protosCache.protocols;
+  }
+  const db = getDb();
+  const rows = db
+    .prepare("SELECT DISTINCT fw_proto AS name FROM logs WHERE fw_proto != '' ORDER BY name")
+    .all() as { name: string }[];
+  const protocols = rows.map((r) => r.name);
+  _protosCache = { protocols, timestamp: now };
+  return protocols;
+}
+
+// --- DB Stats ---
+
+const DATA_DIR = path.join(process.cwd(), "data");
+const DB_PATH = path.join(DATA_DIR, "syslogs.db");
+
+export function getDbStats(): { totalLogs: number; dbSizeBytes: number; dbSizeMb: string } {
+  const db = getDb();
+  const total = (db.prepare("SELECT COUNT(*) as c FROM logs").get() as { c: number }).c;
+  let sizeBytes = 0;
+  try {
+    const stat = fs.statSync(DB_PATH);
+    sizeBytes = stat.size;
+  } catch {
+    // file may not exist yet
+  }
+  return {
+    totalLogs: total,
+    dbSizeBytes: sizeBytes,
+    dbSizeMb: (sizeBytes / (1024 * 1024)).toFixed(1),
+  };
 }

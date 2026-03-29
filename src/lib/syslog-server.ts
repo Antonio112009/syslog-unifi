@@ -40,7 +40,7 @@ const SEVERITIES = [
   "emergency", "alert", "critical", "error", "warning", "notice", "info", "debug",
 ];
 
-function parseSyslogMessage(raw: string, remoteAddress: string): SyslogMessage {
+export function parseSyslogMessage(raw: string, remoteAddress: string): SyslogMessage {
   // RFC 3164: <PRI>TIMESTAMP HOSTNAME MSG
   // RFC 5424: <PRI>VERSION TIMESTAMP HOSTNAME APP-NAME PROCID MSGID SD MSG
   const trimmed = raw.trim();

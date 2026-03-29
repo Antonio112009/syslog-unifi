@@ -13,8 +13,8 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "UniFi Syslog Viewer",
-  description: "Real-time syslog viewer for UniFi devices",
+  title: "Syslog Viewer",
+  description: "Real-time syslog viewer with live streaming, advanced filtering, and full-text search",
 };
 
 export default function RootLayout({
@@ -26,6 +26,7 @@ export default function RootLayout({
     <html
       lang="en"
       className={`dark ${geistSans.variable} ${geistMono.variable} h-full antialiased`}
+      suppressHydrationWarning
     >
       <body className="min-h-full flex flex-col">{children}</body>
     </html>
