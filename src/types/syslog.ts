@@ -33,6 +33,8 @@ export interface ParsedFirewall {
   mac: string;
 }
 
+export type StreamState = "running" | "paused" | "stopped";
+
 export interface Filters {
   action: string;
   proto: string;

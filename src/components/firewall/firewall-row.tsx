@@ -26,12 +26,14 @@ export function FirewallRow({
   isExpanded,
   onToggle,
   showDate,
+  index = 0,
 }: {
   log: SyslogEntry;
   fw: ParsedFirewall;
   isExpanded: boolean;
   onToggle: () => void;
   showDate?: boolean;
+  index?: number;
 }) {
   const [copied, setCopied] = useState(false);
 
@@ -46,55 +48,56 @@ export function FirewallRow({
     ? log.timestamp.replace("T", " ").slice(0, 19)
     : log.timestamp.slice(11, 19);
 
-  const timeWidth = showDate ? "w-[148px]" : "w-[88px]";
+  const timeWidth = showDate ? "w-[180px]" : "w-[88px]";
 
   return (
     <div
-      className="group flex items-start border-b border-border/30 hover:bg-muted/40 cursor-pointer font-mono text-[13px] transition-colors"
-      style={{ minHeight: ROW_HEIGHT }}
+      className="group border-b border-border/30 hover:bg-muted/40 cursor-pointer font-mono text-[13px] font-medium transition-colors"
+      style={{ minHeight: ROW_HEIGHT, backgroundColor: index % 2 === 1 ? "var(--row-stripe)" : undefined }}
       onClick={onToggle}
     >
-      <div className={`px-3 py-2 text-muted-foreground/70 whitespace-nowrap ${timeWidth} shrink-0 tabular-nums`}>
-        {ts}
-      </div>
-      <div className={`px-3 py-2 w-[76px] shrink-0 font-semibold ${ACTION_COLORS[fw.action] || "text-foreground"}`}>
-        <span className={`inline-flex items-center rounded px-1.5 py-0.5 text-xs ${ACTION_BG[fw.action] || ""}`}>
-          {fw.action}
-        </span>
-      </div>
-      <div className="px-3 py-2 text-sky-400 w-64 shrink-0 truncate" title={fw.rule}>
-        {fw.descr || fw.rule}
-      </div>
-      <div className="px-3 py-2 text-violet-400/80 w-20 shrink-0">{fw.iface}</div>
-      <div className="px-3 py-2 text-blue-300/80 w-16 shrink-0 uppercase">{fw.proto}</div>
-      <div className="px-3 py-2 w-48 shrink-0 truncate" title={`${fw.src}:${fw.spt}`}>
-        <span className="text-foreground/90">{fw.src}</span>
-        <span className="text-muted-foreground/60">{fw.spt ? `:${fw.spt}` : ""}</span>
-      </div>
-      <div className="px-3 py-2 w-48 shrink-0 truncate" title={`${fw.dst}:${fw.dpt}`}>
-        <span className="text-foreground/90">{fw.dst}</span>
-        <span className="text-muted-foreground/60">{fw.dpt ? `:${fw.dpt}` : ""}</span>
-      </div>
-      <div className="px-3 py-2 flex-1 min-w-0">
-        {isExpanded ? (
-          <div className="space-y-2">
-            <pre className="whitespace-pre-wrap break-all text-xs text-muted-foreground/70 leading-relaxed">
-              {log.raw}
-            </pre>
-            <button
-              onClick={handleCopy}
-              className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors px-2 py-1 rounded border border-border/50 hover:bg-muted/50"
-            >
-              {copied ? <Check className="size-3 text-emerald-400" /> : <Copy className="size-3" />}
-              {copied ? "Copied" : "Copy raw"}
-            </button>
-          </div>
-        ) : (
+      <div className="flex items-start">
+        <div className={`px-3 py-2 text-muted-foreground/70 whitespace-nowrap ${timeWidth} shrink-0 tabular-nums`}>
+          {ts}
+        </div>
+        <div className={`px-3 py-2 w-[76px] shrink-0 font-semibold ${ACTION_COLORS[fw.action] || "text-foreground"}`}>
+          <span className={`inline-flex items-center rounded px-1.5 py-0.5 text-xs ${ACTION_BG[fw.action] || ""}`}>
+            {fw.action}
+          </span>
+        </div>
+        <div className="px-3 py-2 text-sky-400 w-64 shrink-0 truncate" title={fw.rule}>
+          {fw.descr || fw.rule}
+        </div>
+        <div className="px-3 py-2 text-violet-400/80 w-20 shrink-0">{fw.iface}</div>
+        <div className="px-3 py-2 text-blue-300/80 w-16 shrink-0 uppercase">{fw.proto}</div>
+        <div className="px-3 py-2 w-48 shrink-0 truncate" title={`${fw.src}:${fw.spt}`}>
+          <span className="text-foreground/90">{fw.src}</span>
+          <span className="text-muted-foreground/60">{fw.spt ? `:${fw.spt}` : ""}</span>
+        </div>
+        <div className="px-3 py-2 w-48 shrink-0 truncate" title={`${fw.dst}:${fw.dpt}`}>
+          <span className="text-foreground/90">{fw.dst}</span>
+          <span className="text-muted-foreground/60">{fw.dpt ? `:${fw.dpt}` : ""}</span>
+        </div>
+        <div className="px-3 py-2 flex-1 min-w-0 overflow-hidden">
           <span className="truncate block text-muted-foreground/50 group-hover:text-muted-foreground/70 transition-colors">
             {fw.rule}
           </span>
-        )}
+        </div>
       </div>
+      {isExpanded && (
+        <div className="px-4 pb-3 space-y-2">
+          <pre className="whitespace-pre-wrap break-all text-xs text-muted-foreground/70 leading-relaxed">
+            {log.raw}
+          </pre>
+          <button
+            onClick={handleCopy}
+            className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors px-2 py-1 rounded border border-border/50 hover:bg-muted/50"
+          >
+            {copied ? <Check className="size-3 text-emerald-400" /> : <Copy className="size-3" />}
+            {copied ? "Copied" : "Copy raw"}
+          </button>
+        </div>
+      )}
     </div>
   );
 }

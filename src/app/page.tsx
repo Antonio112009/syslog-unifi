@@ -1,11 +1,12 @@
 "use client";
 
-import { useEffect, useState, useCallback, useMemo } from "react";
-import { ShieldAlert, Inbox } from "lucide-react";
+import { useEffect, useState, useCallback, useMemo, useRef } from "react";
+import { ShieldAlert, Inbox, Search } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { Spinner } from "@/components/spinner";
 import { Header } from "@/components/firewall/header";
-import { Toolbar, type ViewMode } from "@/components/firewall/toolbar";
+import { Toolbar, type ViewMode, type AllLogsFilters, emptyAllLogsFilters } from "@/components/firewall/toolbar";
 import { FirewallRow, ROW_HEIGHT } from "@/components/firewall/firewall-row";
 import { LogRow, LOG_ROW_HEIGHT, ALL_LOG_COLUMNS } from "@/components/log-row";
 import { StatusFooter } from "@/components/firewall/status-footer";
@@ -15,13 +16,13 @@ import { useVirtualScroll } from "@/hooks/use-virtual-scroll";
 import { useTheme } from "@/hooks/use-theme";
 import { loadFromStorage, saveToStorage } from "@/lib/local-storage";
 import { exportAsCsv, exportAsJson } from "@/lib/export";
-import type { SyslogEntry, PaginatedResponse, Filters } from "@/types/syslog";
+import type { ExpandMode, ColorMode } from "@/components/settings-dialog";
+import { parseQuery, matchQuery } from "@/lib/query-parser";
+import type { SyslogEntry, Filters } from "@/types/syslog";
 import { emptyFilters } from "@/types/syslog";
 
-const PAGE_SIZE = 100;
-
 const FW_TABLE_COLUMNS = [
-  { label: "Time", width: "w-[88px]" },
+  { label: "Time", width: "w-[180px]" },
   { label: "Action", width: "w-[76px]" },
   { label: "Rule", width: "w-64" },
   { label: "Iface", width: "w-20" },
@@ -31,105 +32,79 @@ const FW_TABLE_COLUMNS = [
   { label: "Details", width: "flex-1" },
 ];
 
-const FW_TABLE_COLUMNS_DATE = [
-  { label: "Time", width: "w-[148px]" },
-  ...FW_TABLE_COLUMNS.slice(1),
-];
-
 export default function Home() {
-  // Persisted state
   const [viewMode, setViewMode] = useState<ViewMode>(() =>
     loadFromStorage<ViewMode>("viewMode", "all")
-  );
-  const [mode, setMode] = useState<"live" | "history">(() =>
-    loadFromStorage<"live" | "history">("mode", "live")
   );
   const [filters, setFilters] = useState<Filters>(() =>
     loadFromStorage<Filters>("filters", emptyFilters)
   );
-  const [autoScroll, setAutoScroll] = useState(() =>
-    loadFromStorage("autoScroll", true)
+  const [search, setSearch] = useState("");
+  const [allLogsFilters, setAllLogsFilters] = useState<AllLogsFilters>(emptyAllLogsFilters);
+  const [expandMode, setExpandMode] = useState<ExpandMode>(() =>
+    loadFromStorage<ExpandMode>("expandMode", "single")
   );
-
-  // Theme
-  const { theme, setTheme } = useTheme();
-
-  // Stream
-  const { liveLogs, connected, isConnecting, retryCount, clearLive } =
-    useLogStream({ firewallOnly: viewMode === "firewall" });
-
-  // History state
-  const [historyLogs, setHistoryLogs] = useState<SyslogEntry[]>([]);
-  const [historyPage, setHistoryPage] = useState(1);
-  const [historyTotal, setHistoryTotal] = useState(0);
-  const [historyTotalPages, setHistoryTotalPages] = useState(1);
-  const [historyLoading, setHistoryLoading] = useState(false);
-  const [committedSearch, setCommittedSearch] = useState(filters.search || "");
-  const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [colorMode, setColorMode] = useState<ColorMode>(() =>
+    loadFromStorage<ColorMode>("colorMode", "badge")
+  );
+  const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
   const [dbRules, setDbRules] = useState<string[]>([]);
   const [dbProtocols, setDbProtocols] = useState<string[]>([]);
 
+  const { theme, setTheme } = useTheme();
+
+  const {
+    logs,
+    streamState,
+    connected,
+    start,
+    pause,
+    resume,
+    stop,
+    loadMore,
+    hasMore,
+    bufferedCount,
+    isLoadingMore,
+    clearLogs,
+    totalInDb,
+  } = useLogStream();
+
   // Persist preferences
   useEffect(() => saveToStorage("viewMode", viewMode), [viewMode]);
-  useEffect(() => saveToStorage("mode", mode), [mode]);
   useEffect(() => saveToStorage("filters", filters), [filters]);
-  useEffect(() => saveToStorage("autoScroll", autoScroll), [autoScroll]);
+  useEffect(() => saveToStorage("expandMode", expandMode), [expandMode]);
+  useEffect(() => saveToStorage("colorMode", colorMode), [colorMode]);
 
-  const displayLogs = mode === "live" ? liveLogs : historyLogs;
+  // Expand toggle logic
+  const isExpanded = useCallback(
+    (id: string) => {
+      if (expandMode === "all") return true;
+      return expandedIds.has(id);
+    },
+    [expandMode, expandedIds]
+  );
 
-  const fetchPage = useCallback(
-    async (page: number, searchOverride?: string, filterOverride?: Filters) => {
-      setHistoryLoading(true);
-      try {
-        const params = new URLSearchParams();
-        params.set("page", String(page));
-        params.set("pageSize", String(PAGE_SIZE));
-        if (viewMode === "firewall") params.set("firewall", "true");
-        const q = searchOverride ?? committedSearch;
-        if (q) params.set("search", q);
-
-        const f = filterOverride ?? filters;
-        if (viewMode === "firewall") {
-          if (f.action) params.set("action", f.action);
-          if (f.proto) params.set("proto", f.proto);
-          if (f.srcIp) params.set("srcIp", f.srcIp);
-          if (f.srcPort) params.set("srcPort", f.srcPort);
-          if (f.dstIp) params.set("dstIp", f.dstIp);
-          if (f.dstPort) params.set("dstPort", f.dstPort);
-          if (f.rule) params.set("rule", f.rule);
-          if (f.ipMatch === "or") params.set("ipMatch", "or");
+  const toggleExpand = useCallback(
+    (id: string) => {
+      if (expandMode === "all") return;
+      setExpandedIds((prev) => {
+        if (expandMode === "single") {
+          // Toggle: if already open, close; otherwise open only this one
+          if (prev.has(id)) return new Set();
+          return new Set([id]);
         }
-
-        const res = await fetch(`/api/logs?${params}`);
-        const data: PaginatedResponse = await res.json();
-        setHistoryLogs(data.logs);
-        setHistoryPage(data.page);
-        setHistoryTotal(data.total);
-        setHistoryTotalPages(data.totalPages);
-      } finally {
-        setHistoryLoading(false);
-      }
+        // single-keep: toggle individual, keep others
+        const next = new Set(prev);
+        if (next.has(id)) next.delete(id);
+        else next.add(id);
+        return next;
+      });
     },
-    [committedSearch, filters, viewMode]
+    [expandMode]
   );
 
-  const handlePageChange = useCallback(
-    (page: number) => {
-      setHistoryPage(page);
-      fetchPage(page);
-    },
-    [fetchPage]
-  );
-
-  const goLive = useCallback(() => {
-    setMode("live");
-    setAutoScroll(true);
-    setHistoryPage(1);
-  }, []);
-
-  const browseHistory = useCallback(() => {
-    setMode("history");
-    fetchPage(1);
+  // Fetch filter options from DB
+  useEffect(() => {
     fetch("/api/logs/filters")
       .then((r) => r.json())
       .then((d: { rules: string[]; protocols: string[] }) => {
@@ -137,98 +112,80 @@ export default function Home() {
         setDbProtocols(d.protocols || []);
       })
       .catch(() => {});
-  }, [fetchPage]);
+  }, []);
 
-  const handleFiltersChange = useCallback(
-    (f: Filters) => {
-      setFilters(f);
-      if (f.search !== committedSearch) setCommittedSearch(f.search);
-      if (mode === "history") fetchPage(1, f.search, f);
-    },
-    [committedSearch, fetchPage, mode]
-  );
+  // Parse search query
+  const parsedQuery = useMemo(() => parseQuery(search), [search]);
 
-  const clearAllFilters = useCallback(() => {
-    setFilters(emptyFilters);
-    setCommittedSearch("");
-    if (mode === "history") fetchPage(1, "", emptyFilters);
-  }, [mode, fetchPage]);
-
-  const removeFilter = useCallback(
-    (key: keyof Filters) => {
-      setFilters((prev) => {
-        const next = { ...prev, [key]: key === "ipMatch" ? "and" : "" };
-        if (key === "search") setCommittedSearch("");
-        if (mode === "history")
-          fetchPage(1, key === "search" ? "" : undefined, next);
-        return next;
-      });
-    },
-    [mode, fetchPage]
-  );
-
-  useEffect(() => {
-    if (mode === "history") fetchPage(1);
-  }, [mode, fetchPage]);
-
-  // Client-side search for live mode
+  // Client-side search + all-logs filters
   const filteredLogs = useMemo(() => {
-    return displayLogs.filter((log) => {
-      if (mode === "live" && filters.search) {
-        const q = filters.search.toLowerCase();
-        if (
-          !log.message.toLowerCase().includes(q) &&
-          !log.host.toLowerCase().includes(q) &&
-          !log.raw.toLowerCase().includes(q)
-        )
-          return false;
-      }
+    return logs.filter((log) => {
+      if (!matchQuery(log, parsedQuery)) return false;
+      if (allLogsFilters.severity && log.severity !== allLogsFilters.severity)
+        return false;
+      if (
+        allLogsFilters.host &&
+        !log.host.toLowerCase().includes(allLogsFilters.host.toLowerCase())
+      )
+        return false;
+      if (
+        allLogsFilters.facility &&
+        !log.facility
+          .toLowerCase()
+          .includes(allLogsFilters.facility.toLowerCase())
+      )
+        return false;
       return true;
     });
-  }, [displayLogs, filters.search, mode]);
+  }, [logs, parsedQuery, allLogsFilters]);
 
   // Firewall parsing + client-side filtering
   const firewallParsed = useMemo(() => {
     if (viewMode !== "firewall") return [];
-    let parsed = filteredLogs.map((log) => ({
+    // First filter to firewall logs only
+    const fwLogs = filteredLogs.filter(
+      (log) =>
+        log.message.includes("-A-") ||
+        log.message.includes("-D-") ||
+        log.message.includes("-R-")
+    );
+    let parsed = fwLogs.map((log) => ({
       log,
       fw: parseFirewallMessage(log.message)!,
     }));
-    if (mode === "live") {
-      if (filters.action)
-        parsed = parsed.filter(({ fw }) => fw.action === filters.action);
-      if (filters.proto)
-        parsed = parsed.filter(
-          ({ fw }) => fw.proto.toUpperCase() === filters.proto.toUpperCase()
-        );
-      const hasSrcFilter = !!(filters.srcIp || filters.srcPort);
-      const hasDstFilter = !!(filters.dstIp || filters.dstPort);
-      if (hasSrcFilter || hasDstFilter) {
-        parsed = parsed.filter(({ fw }) => {
-          const srcMatch =
-            (!filters.srcIp ||
-              fw.src.toLowerCase().includes(filters.srcIp.toLowerCase())) &&
-            (!filters.srcPort || fw.spt === filters.srcPort);
-          const dstMatch =
-            (!filters.dstIp ||
-              fw.dst.toLowerCase().includes(filters.dstIp.toLowerCase())) &&
-            (!filters.dstPort || fw.dpt === filters.dstPort);
-          if (filters.ipMatch === "or" && hasSrcFilter && hasDstFilter)
-            return srcMatch || dstMatch;
-          return (!hasSrcFilter || srcMatch) && (!hasDstFilter || dstMatch);
-        });
-      }
-      if (filters.rule) {
-        const q = filters.rule.toLowerCase();
-        parsed = parsed.filter(
-          ({ fw }) =>
-            fw.rule.toLowerCase().includes(q) ||
-            fw.descr.toLowerCase().includes(q)
-        );
-      }
+    if (filters.action)
+      parsed = parsed.filter(({ fw }) => fw.action === filters.action);
+    if (filters.proto)
+      parsed = parsed.filter(
+        ({ fw }) => fw.proto.toUpperCase() === filters.proto.toUpperCase()
+      );
+    const hasSrcFilter = !!(filters.srcIp || filters.srcPort);
+    const hasDstFilter = !!(filters.dstIp || filters.dstPort);
+    if (hasSrcFilter || hasDstFilter) {
+      parsed = parsed.filter(({ fw }) => {
+        const srcMatch =
+          (!filters.srcIp ||
+            fw.src.toLowerCase().includes(filters.srcIp.toLowerCase())) &&
+          (!filters.srcPort || fw.spt === filters.srcPort);
+        const dstMatch =
+          (!filters.dstIp ||
+            fw.dst.toLowerCase().includes(filters.dstIp.toLowerCase())) &&
+          (!filters.dstPort || fw.dpt === filters.dstPort);
+        if (filters.ipMatch === "or" && hasSrcFilter && hasDstFilter)
+          return srcMatch || dstMatch;
+        return (!hasSrcFilter || srcMatch) && (!hasDstFilter || dstMatch);
+      });
+    }
+    if (filters.rule) {
+      const q = filters.rule.toLowerCase();
+      parsed = parsed.filter(
+        ({ fw }) =>
+          fw.rule.toLowerCase().includes(q) ||
+          fw.descr.toLowerCase().includes(q)
+      );
     }
     return parsed;
-  }, [filteredLogs, filters, viewMode, mode]);
+  }, [filteredLogs, filters, viewMode]);
 
   const uniqueRules = useMemo(() => {
     const seen = new Set<string>();
@@ -239,29 +196,49 @@ export default function Home() {
   }, [firewallParsed]);
 
   // Items for virtual scroll
-  const items: unknown[] = viewMode === "firewall" ? firewallParsed : filteredLogs;
+  const items: unknown[] =
+    viewMode === "firewall" ? firewallParsed : filteredLogs;
   const rowHeight = viewMode === "firewall" ? ROW_HEIGHT : LOG_ROW_HEIGHT;
-  const showDate = mode === "history";
 
-  const { scrollRef, handleScroll, virtualData, isNearTop, scrollToTop } =
-    useVirtualScroll(items, rowHeight, {
-      autoScrollToTop: mode === "live" && autoScroll,
-      autoScrollDep: liveLogs,
-    });
+  const prevItemCountRef = useRef(items.length);
+  const {
+    scrollRef,
+    handleScroll,
+    virtualData,
+    isNearTop,
+    isNearBottom,
+    scrollToBottom,
+    adjustScrollForPrepend,
+  } = useVirtualScroll(items, rowHeight, {
+    autoScrollToBottom: streamState === "running",
+  });
 
-  // Disable auto-scroll when user scrolls away
+  // Load more when scrolling to top
   useEffect(() => {
-    if (mode === "live" && !isNearTop && autoScroll) {
-      setAutoScroll(false);
+    if (isNearTop && hasMore && !isLoadingMore) {
+      const prevCount = items.length;
+      loadMore().then(() => {
+        // adjustScrollForPrepend will run after state update via the effect below
+      });
     }
-  }, [isNearTop, mode, autoScroll]);
+  }, [isNearTop, hasMore, isLoadingMore, loadMore, items.length]);
+
+  // Adjust scroll when items are prepended (loadMore adds to beginning)
+  useEffect(() => {
+    const prevCount = prevItemCountRef.current;
+    const newCount = items.length;
+    prevItemCountRef.current = newCount;
+
+    if (isLoadingMore === false && newCount > prevCount && isNearTop) {
+      // Items were prepended — adjust scroll to keep viewport stable
+      const prependedCount = newCount - prevCount;
+      adjustScrollForPrepend(prependedCount);
+    }
+  }, [items.length, isLoadingMore, isNearTop, adjustScrollForPrepend]);
 
   const handleClear = async () => {
     await fetch("/api/logs", { method: "DELETE" });
-    clearLive();
-    setHistoryLogs([]);
-    setHistoryTotal(0);
-    setHistoryTotalPages(1);
+    clearLogs();
   };
 
   const handleDeleteFiltered = useCallback(
@@ -277,51 +254,73 @@ export default function Home() {
       if (f.ipMatch === "or") params.set("ipMatch", "or");
       const res = await fetch(`/api/logs?${params}`, { method: "DELETE" });
       const data = await res.json();
-      if (mode === "history") fetchPage(historyPage);
       return data.deleted ?? 0;
     },
-    [mode, fetchPage, historyPage]
+    []
   );
 
-  const totalCount = mode === "history" ? historyTotal : liveLogs.length;
+  const handleFiltersChange = useCallback((f: Filters) => {
+    setFilters(f);
+  }, []);
+
+  const clearAllFilters = useCallback(() => {
+    setFilters(emptyFilters);
+    setAllLogsFilters(emptyAllLogsFilters);
+    setSearch("");
+  }, []);
+
+  const removeAllLogsFilter = useCallback((key: keyof AllLogsFilters) => {
+    setAllLogsFilters((prev) => ({ ...prev, [key]: "" }));
+  }, []);
+
+  const removeFilter = useCallback((key: keyof Filters) => {
+    setFilters((prev) => ({
+      ...prev,
+      [key]: key === "ipMatch" ? "and" : "",
+    }));
+  }, []);
 
   const activeFilterCount = useMemo(() => {
-    if (viewMode !== "firewall") return 0;
     let count = 0;
-    if (filters.action) count++;
-    if (filters.proto) count++;
-    if (filters.srcIp) count++;
-    if (filters.srcPort) count++;
-    if (filters.dstIp) count++;
-    if (filters.dstPort) count++;
-    if (filters.rule) count++;
-    if (filters.search) count++;
+    if (viewMode === "firewall") {
+      if (filters.action) count++;
+      if (filters.proto) count++;
+      if (filters.srcIp) count++;
+      if (filters.srcPort) count++;
+      if (filters.dstIp) count++;
+      if (filters.dstPort) count++;
+      if (filters.rule) count++;
+    } else {
+      if (allLogsFilters.severity) count++;
+      if (allLogsFilters.host) count++;
+      if (allLogsFilters.facility) count++;
+    }
+    if (search) count++;
     return count;
-  }, [filters, viewMode]);
+  }, [filters, allLogsFilters, viewMode, search]);
 
   const handleExportCsv = useCallback(() => {
-    const logs =
-      viewMode === "firewall" ? firewallParsed.map((p) => p.log) : filteredLogs;
-    exportAsCsv(logs);
+    const exportLogs =
+      viewMode === "firewall"
+        ? firewallParsed.map((p) => p.log)
+        : filteredLogs;
+    exportAsCsv(exportLogs);
   }, [viewMode, firewallParsed, filteredLogs]);
 
   const handleExportJson = useCallback(() => {
-    const logs =
-      viewMode === "firewall" ? firewallParsed.map((p) => p.log) : filteredLogs;
-    exportAsJson(logs);
+    const exportLogs =
+      viewMode === "firewall"
+        ? firewallParsed.map((p) => p.log)
+        : filteredLogs;
+    exportAsJson(exportLogs);
   }, [viewMode, firewallParsed, filteredLogs]);
 
   const handleViewModeChange = useCallback((v: ViewMode) => {
     setViewMode(v);
-    setExpandedId(null);
+    setExpandedIds(new Set());
   }, []);
 
-  const columns =
-    viewMode === "firewall"
-      ? showDate
-        ? FW_TABLE_COLUMNS_DATE
-        : FW_TABLE_COLUMNS
-      : ALL_LOG_COLUMNS;
+  const columns = viewMode === "firewall" ? FW_TABLE_COLUMNS : ALL_LOG_COLUMNS;
 
   const emptyIcon =
     viewMode === "firewall" ? (
@@ -342,63 +341,79 @@ export default function Home() {
     <div className="flex flex-col h-screen bg-background text-foreground">
       <Header
         connected={connected}
-        isConnecting={isConnecting}
-        retryCount={retryCount}
+        isConnecting={streamState === "running" && !connected}
+        retryCount={0}
         onClear={handleClear}
         theme={theme}
         onThemeChange={setTheme}
+        expandMode={expandMode}
+        onExpandModeChange={setExpandMode}
+        colorMode={colorMode}
+        onColorModeChange={setColorMode}
       />
 
+      {/* Search bar */}
+      <div className="px-4 py-2 bg-card/40 border-b border-border/50">
+        <div className="relative max-w-2xl">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 size-4 text-muted-foreground pointer-events-none" />
+          <Input
+            placeholder='Search: text, host=X, level=X, src=X, dst=X, proto=X OR/AND...'
+            value={search}
+            onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+              setSearch(e.target.value)
+            }
+            className="h-9 pl-10 text-sm bg-muted/50 border-border/50 focus-visible:bg-background"
+            autoComplete="off"
+            data-1p-ignore
+            data-lpignore="true"
+          />
+        </div>
+      </div>
+
       <Toolbar
-        mode={mode}
         viewMode={viewMode}
-        historyPage={historyPage}
-        historyTotalPages={historyTotalPages}
-        historyLoading={historyLoading}
+        streamState={streamState}
+        bufferedCount={bufferedCount}
         filters={filters}
         activeFilterCount={activeFilterCount}
         entryCount={items.length}
-        autoScroll={autoScroll}
+        allLogsFilters={allLogsFilters}
+        onAllLogsFiltersChange={setAllLogsFilters}
+        onClearAllLogsFilters={() => setAllLogsFilters(emptyAllLogsFilters)}
+        onRemoveAllLogsFilter={removeAllLogsFilter}
         onFiltersChange={handleFiltersChange}
         onClearFilters={clearAllFilters}
         onRemoveFilter={removeFilter}
         onDeleteFiltered={handleDeleteFiltered}
-        onBrowseHistory={browseHistory}
-        onGoLive={goLive}
-        onAutoScrollChange={setAutoScroll}
+        onStart={start}
+        onPause={pause}
+        onResume={resume}
+        onStop={stop}
         onViewModeChange={handleViewModeChange}
         onExportCsv={handleExportCsv}
         onExportJson={handleExportJson}
-        ruleOptions={mode === "history" ? dbRules : uniqueRules}
+        ruleOptions={[...new Set([...dbRules, ...uniqueRules])].sort()}
         protocolOptions={dbProtocols}
       />
 
-      {/* Table header */}
-      <div className="flex bg-card/60 text-muted-foreground text-[11px] uppercase font-mono font-medium tracking-wider shrink-0 border-b border-border/50">
-        {columns.map((col) => (
-          <div
-            key={col.label}
-            className={`px-3 py-2.5 ${col.width} shrink-0`}
-          >
-            {col.label}
-          </div>
-        ))}
-      </div>
-
-      {/* Scrollable log area */}
+      {/* Scrollable log area (horizontal + vertical) */}
       <div
         ref={scrollRef}
         className="flex-1 overflow-auto min-h-0"
         onScroll={handleScroll}
       >
+        {/* Sticky column header — scrolls horizontally with content, pinned vertically */}
+        <div className="sticky top-0 z-10 flex bg-muted/80 backdrop-blur-sm text-muted-foreground text-[11px] uppercase font-mono font-medium tracking-wider border-b-2 border-border mx-2">
+          {columns.map((col) => (
+            <div key={col.label} className={`px-3 py-2.5 ${col.width} shrink-0`}>
+              {col.label}
+            </div>
+          ))}
+        </div>
+
         {items.length === 0 ? (
           <div className="px-3 py-16 text-center text-muted-foreground">
-            {historyLoading ? (
-              <div className="flex flex-col items-center gap-3">
-                <Spinner className="h-6 w-6" />
-                <span>Loading...</span>
-              </div>
-            ) : isConnecting && mode === "live" ? (
+            {streamState === "running" && !connected ? (
               <div className="flex flex-col items-center gap-3">
                 <Spinner className="h-6 w-6" />
                 <span className="text-sm">Connecting to log stream...</span>
@@ -429,7 +444,16 @@ export default function Home() {
           <div
             style={{ height: virtualData.totalHeight, position: "relative" }}
           >
+            {isLoadingMore && (
+              <div className="sticky top-8 left-0 right-0 flex justify-center py-2 z-10">
+                <span className="inline-flex items-center gap-2 text-xs text-muted-foreground bg-card/90 backdrop-blur-sm px-3 py-1.5 rounded-full border border-border/50">
+                  <Spinner className="size-3" />
+                  Loading older logs...
+                </span>
+              </div>
+            )}
             <div
+              className="mx-2"
               style={{
                 position: "absolute",
                 top: virtualData.offsetTop,
@@ -438,33 +462,33 @@ export default function Home() {
               }}
             >
               {viewMode === "firewall"
-                ? (virtualData.visible as { log: SyslogEntry; fw: NonNullable<ReturnType<typeof parseFirewallMessage>> }[]).map(
-                    (item) => (
-                      <FirewallRow
-                        key={item.log.id}
-                        log={item.log}
-                        fw={item.fw}
-                        isExpanded={expandedId === item.log.id}
-                        onToggle={() =>
-                          setExpandedId(
-                            expandedId === item.log.id ? null : item.log.id
-                          )
-                        }
-                        showDate={showDate}
-                      />
-                    )
-                  )
-                : (virtualData.visible as SyslogEntry[]).map((log) => (
+                ? (
+                    virtualData.visible as {
+                      log: SyslogEntry;
+                      fw: NonNullable<
+                        ReturnType<typeof parseFirewallMessage>
+                      >;
+                    }[]
+                  ).map((item, i) => (
+                    <FirewallRow
+                      key={item.log.id}
+                      log={item.log}
+                      fw={item.fw}
+                      isExpanded={isExpanded(item.log.id)}
+                      onToggle={() => toggleExpand(item.log.id)}
+                      showDate
+                      index={virtualData.startIdx + i}
+                    />
+                  ))
+                : (virtualData.visible as SyslogEntry[]).map((log, i) => (
                     <LogRow
                       key={log.id}
                       log={log}
-                      isExpanded={expandedId === log.id}
-                      onToggle={() =>
-                        setExpandedId(
-                          expandedId === log.id ? null : log.id
-                        )
-                      }
-                      showDate={showDate}
+                      isExpanded={isExpanded(log.id)}
+                      onToggle={() => toggleExpand(log.id)}
+                      showDate
+                      colorMode={colorMode}
+                      index={virtualData.startIdx + i}
                     />
                   ))}
             </div>
@@ -473,16 +497,9 @@ export default function Home() {
       </div>
 
       <StatusFooter
-        mode={mode}
-        totalCount={totalCount}
-        historyPage={historyPage}
-        historyTotalPages={historyTotalPages}
-        onPageChange={(page) => {
-          handlePageChange(page);
-          scrollToTop();
-        }}
-        onBrowseHistory={browseHistory}
-        onGoLive={goLive}
+        totalCount={totalInDb}
+        streamState={streamState}
+        isLoadingMore={isLoadingMore}
       />
     </div>
   );

@@ -6,27 +6,47 @@ import type { SyslogEntry } from "@/types/syslog";
 
 export const LOG_ROW_HEIGHT = 36;
 
-const SEVERITY_COLORS: Record<string, string> = {
-  emergency: "text-red-500 bg-red-500/10",
-  alert: "text-red-400 bg-red-400/10",
-  critical: "text-red-400 bg-red-400/10",
-  error: "text-orange-400 bg-orange-400/10",
-  warning: "text-amber-400 bg-amber-400/10",
-  notice: "text-blue-400 bg-blue-400/10",
-  info: "text-sky-400 bg-sky-400/10",
-  debug: "text-gray-400 bg-gray-400/10",
+// Kiwi-style bold filled badges — high contrast bg with readable text
+const SEVERITY_BADGE_STYLES: Record<string, string> = {
+  emergency: "bg-red-700 text-white",
+  alert:     "bg-orange-600 text-white",
+  critical:  "bg-red-600 text-white",
+  error:     "bg-rose-600 text-white",
+  warning:   "bg-amber-600 text-white",
+  notice:    "bg-sky-600 text-white",
+  info:      "bg-blue-600 text-white",
+  debug:     "bg-zinc-600 text-white",
 };
+
+const DEFAULT_BADGE = "bg-muted text-muted-foreground";
+
+// Subtle row background tints for "row" color mode
+const SEVERITY_ROW_BG: Record<string, string> = {
+  emergency: "rgba(220, 38, 38, 0.12)",
+  alert:     "rgba(249, 115, 22, 0.10)",
+  critical:  "rgba(239, 68, 68, 0.10)",
+  error:     "rgba(244, 63, 94, 0.08)",
+  warning:   "rgba(245, 158, 11, 0.08)",
+  notice:    "rgba(14, 165, 233, 0.06)",
+  info:      "rgba(59, 130, 246, 0.05)",
+  debug:     "rgba(113, 113, 122, 0.05)",
+};
+
 
 export function LogRow({
   log,
   isExpanded,
   onToggle,
   showDate,
+  colorMode = "badge",
+  index = 0,
 }: {
   log: SyslogEntry;
   isExpanded: boolean;
   onToggle: () => void;
   showDate?: boolean;
+  colorMode?: "badge" | "row";
+  index?: number;
 }) {
   const [copied, setCopied] = useState(false);
 
@@ -41,55 +61,73 @@ export function LogRow({
     ? log.timestamp.replace("T", " ").slice(0, 19)
     : log.timestamp.slice(11, 19);
 
-  const sevClass = SEVERITY_COLORS[log.severity] || "text-muted-foreground";
+  const badgeClass = SEVERITY_BADGE_STYLES[log.severity] || DEFAULT_BADGE;
+  const rowBg = colorMode === "row"
+    ? SEVERITY_ROW_BG[log.severity]
+    : index % 2 === 1
+      ? "var(--row-stripe)"
+      : undefined;
 
   return (
     <div
-      className="group flex items-start border-b border-border/30 hover:bg-muted/40 cursor-pointer font-mono text-[13px] transition-colors"
-      style={{ minHeight: LOG_ROW_HEIGHT }}
+      className="group border-b border-border/30 hover:bg-muted/40 cursor-pointer font-mono text-[13px] font-medium transition-colors"
+      style={{ minHeight: LOG_ROW_HEIGHT, backgroundColor: rowBg }}
       onClick={onToggle}
     >
-      <div className="px-3 py-2 text-muted-foreground/70 whitespace-nowrap w-[140px] shrink-0 tabular-nums">
-        {ts}
-      </div>
-      <div className="px-3 py-2 w-[80px] shrink-0">
-        <span className={`inline-flex items-center rounded px-1.5 py-0.5 text-xs font-semibold ${sevClass}`}>
-          {log.severity}
-        </span>
-      </div>
-      <div className="px-3 py-2 text-violet-400/80 w-[140px] shrink-0 truncate" title={log.host}>
-        {log.host}
-      </div>
-      <div className="px-3 py-2 text-sky-400/70 w-[100px] shrink-0 truncate" title={log.facility}>
-        {log.facility}
-      </div>
-      <div className="px-3 py-2 flex-1 min-w-0">
-        {isExpanded ? (
-          <div className="space-y-2">
-            <pre className="whitespace-pre-wrap break-all text-xs text-muted-foreground/70 leading-relaxed">
-              {log.raw}
-            </pre>
-            <button
-              onClick={handleCopy}
-              className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors px-2 py-1 rounded border border-border/50 hover:bg-muted/50"
-            >
-              {copied ? <Check className="size-3 text-emerald-400" /> : <Copy className="size-3" />}
-              {copied ? "Copied" : "Copy raw"}
-            </button>
-          </div>
-        ) : (
+      <div className="flex items-start">
+        <div className="px-3 py-2 text-muted-foreground/70 whitespace-nowrap w-[180px] shrink-0 tabular-nums">
+          {ts}
+        </div>
+        <div className="px-3 py-2 w-[90px] shrink-0">
+          <span
+            className={`inline-flex items-center rounded px-1.5 py-0.5 text-[11px] font-bold uppercase tracking-wide ${badgeClass}`}
+          >
+            {log.severity}
+          </span>
+        </div>
+        <div
+          className="px-3 py-2 text-violet-400/80 w-[140px] shrink-0 truncate"
+          title={log.host}
+        >
+          {log.host}
+        </div>
+        <div
+          className="px-3 py-2 text-sky-400/70 w-[100px] shrink-0 truncate"
+          title={log.facility}
+        >
+          {log.facility}
+        </div>
+        <div className="px-3 py-2 flex-1 min-w-0 overflow-hidden">
           <span className="truncate block text-foreground/80 group-hover:text-foreground/90 transition-colors">
             {log.message}
           </span>
-        )}
+        </div>
       </div>
+      {isExpanded && (
+        <div className="px-4 pb-3 space-y-2">
+          <pre className="whitespace-pre-wrap break-all text-xs text-muted-foreground/70 leading-relaxed">
+            {log.raw}
+          </pre>
+          <button
+            onClick={handleCopy}
+            className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors px-2 py-1 rounded border border-border/50 hover:bg-muted/50"
+          >
+            {copied ? (
+              <Check className="size-3 text-emerald-400" />
+            ) : (
+              <Copy className="size-3" />
+            )}
+            {copied ? "Copied" : "Copy raw"}
+          </button>
+        </div>
+      )}
     </div>
   );
 }
 
 export const ALL_LOG_COLUMNS = [
-  { label: "Time", width: "w-[140px]" },
-  { label: "Severity", width: "w-[80px]" },
+  { label: "Time", width: "w-[180px]" },
+  { label: "Level", width: "w-[90px]" },
   { label: "Host", width: "w-[140px]" },
   { label: "Facility", width: "w-[100px]" },
   { label: "Message", width: "flex-1" },
