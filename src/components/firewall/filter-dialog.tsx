@@ -90,7 +90,7 @@ export function FilterDialog({
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogTrigger render={<Button variant="outline" size="sm" />}>
-        <Filter className="size-4" />
+        <Filter data-icon="inline-start" />
         Filters
         {activeCount > 0 && (
           <Badge variant="secondary" className="ml-1 h-4 text-[10px] px-1.5">
@@ -122,6 +122,7 @@ export function FilterDialog({
                 <option value="Allow">Allow</option>
                 <option value="Drop">Drop</option>
                 <option value="Reject">Reject</option>
+                <option value="Alert">Alert</option>
               </select>
             </div>
             <div className="space-y-1.5">

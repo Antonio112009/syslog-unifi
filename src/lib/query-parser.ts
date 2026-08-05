@@ -20,8 +20,6 @@
 
 import type { SyslogEntry } from "@/types/syslog";
 
-type Operator = "AND" | "OR";
-
 interface FieldCondition {
   type: "field";
   field: string;

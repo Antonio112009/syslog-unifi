@@ -3,8 +3,19 @@
 import { useEffect, useState } from "react";
 import { Shield, Trash2, Database } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
+import {
+  Dialog,
+  DialogClose,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "@/components/ui/dialog";
 import { Spinner } from "@/components/spinner";
 import { SettingsDialog, type ExpandMode, type ColorMode } from "@/components/settings-dialog";
 import type { Theme } from "@/hooks/use-theme";
@@ -50,63 +61,74 @@ export function Header({
     return () => clearInterval(id);
   }, []);
 
+  const connectionLabel = isConnecting
+    ? "Connecting"
+    : connected
+      ? "Viewer live"
+      : "Offline";
+
   return (
-    <header className="flex items-center gap-4 px-4 py-2.5 bg-card/80 backdrop-blur-sm border-b border-border/50 sticky top-0 z-10">
-      {/* Logo + title */}
-      <div className="flex items-center gap-2 shrink-0">
-        <div className="flex items-center justify-center size-7 rounded-lg bg-primary/10 text-primary">
-          <Shield className="size-3.5" />
+    <header className="flex min-h-14 shrink-0 items-center gap-3 border-b border-border/60 bg-card/80 px-3 py-2 backdrop-blur-md sm:px-4">
+      <div className="flex shrink-0 items-center gap-2.5">
+        <div className="flex size-8 items-center justify-center rounded-xl bg-primary text-primary-foreground shadow-sm">
+          <Shield className="size-4" />
         </div>
-        <h1 className="text-sm font-semibold tracking-tight hidden sm:block">
-          Syslog Viewer
-        </h1>
+        <div className="hidden flex-col sm:flex">
+          <h1 className="text-sm font-semibold leading-tight tracking-tight">
+            UniFi Syslog
+          </h1>
+          <span className="font-mono text-[10px] uppercase tracking-wider text-muted-foreground">
+            Operations console
+          </span>
+        </div>
       </div>
 
-      {/* Connection + stats */}
-      <div className="flex items-center gap-2 shrink-0">
-        <span
-          className={cn(
-            "inline-flex items-center gap-1.5 text-xs font-medium",
-            connected
-              ? "text-emerald-400"
-              : isConnecting
-                ? "text-amber-400"
-                : "text-destructive"
-          )}
+      <div className="flex shrink-0 items-center gap-2">
+        <Badge
+          variant="outline"
+          className="gap-1.5"
           title={
             connected
-              ? "Stream connected"
+              ? "Browser connected to the application's live event stream"
               : isConnecting
                 ? "Connecting..."
                 : `Disconnected (retry #${retryCount})`
           }
         >
           {isConnecting ? (
-            <Spinner className="text-amber-400" />
+            <Spinner className="size-3 text-status-paused" />
           ) : (
             <span
               className={cn(
-                "inline-block w-2 h-2 rounded-full",
-                connected
-                  ? "bg-emerald-500 shadow-[0_0_6px_rgba(16,185,129,0.6)]"
-                  : "bg-destructive"
+                "size-1.5 rounded-full",
+                connected ? "bg-status-online" : "bg-status-offline"
               )}
             />
           )}
-          <span className="hidden md:inline">
-            {isConnecting
-              ? "Connecting"
-              : connected
-                ? "Connected"
-                : "Disconnected"}
+          <span
+            className={cn(
+              connected
+                ? "text-status-online"
+                : isConnecting
+                  ? "text-status-paused"
+                  : "text-status-offline"
+            )}
+          >
+            {connectionLabel}
           </span>
-        </span>
+        </Badge>
         {stats && (
           <>
-            <Separator orientation="vertical" className="h-4" />
-            <span className="inline-flex items-center gap-1 text-xs text-muted-foreground tabular-nums" title={`${stats.totalLogs.toLocaleString()} logs, ${stats.dbSizeMb} MB database`}>
+            <Separator orientation="vertical" className="hidden h-4 md:block" />
+            <span
+              className="hidden items-center gap-1.5 font-mono text-[11px] tabular-nums text-muted-foreground md:inline-flex"
+              title={`${stats.totalLogs.toLocaleString()} logs, ${stats.dbSizeMb} MB database`}
+            >
               <Database className="size-3" />
-              <span className="hidden lg:inline">{stats.totalLogs.toLocaleString()} logs ·</span> {stats.dbSizeMb} MB
+              <span className="hidden lg:inline">
+                {stats.totalLogs.toLocaleString()} stored
+              </span>
+              <span>· {stats.dbSizeMb} MB database</span>
             </span>
           </>
         )}
@@ -114,8 +136,7 @@ export function Header({
 
       <div className="flex-1" />
 
-      {/* Actions */}
-      <div className="flex items-center gap-1.5 shrink-0">
+      <div className="flex shrink-0 items-center gap-1.5">
         <SettingsDialog
           theme={theme}
           expandMode={expandMode}
@@ -124,15 +145,33 @@ export function Header({
           onExpandModeChange={onExpandModeChange}
           onColorModeChange={onColorModeChange}
         />
-        <Button
-          onClick={onClear}
-          variant="outline"
-          size="sm"
-          className="text-destructive hover:text-destructive hover:bg-destructive/10 border-destructive/30"
-        >
-          <Trash2 className="size-3.5" />
-          <span className="hidden sm:inline">Clear All</span>
-        </Button>
+        <Dialog>
+          <DialogTrigger render={<Button variant="destructive" size="sm" />}>
+            <Trash2 data-icon="inline-start" />
+            <span className="hidden sm:inline">Clear all</span>
+          </DialogTrigger>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>Clear all stored logs?</DialogTitle>
+              <DialogDescription>
+                This permanently deletes
+                {stats ? ` ${stats.totalLogs.toLocaleString()}` : " all"} stored
+                entries. New events will continue to arrive while the stream is running.
+              </DialogDescription>
+            </DialogHeader>
+            <DialogFooter>
+              <DialogClose render={<Button variant="outline" />}>
+                Cancel
+              </DialogClose>
+              <DialogClose
+                render={<Button variant="destructive" onClick={onClear} />}
+              >
+                <Trash2 data-icon="inline-start" />
+                Clear all logs
+              </DialogClose>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
       </div>
     </header>
   );

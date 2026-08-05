@@ -1,7 +1,7 @@
 "use client";
 
-import { useEffect, useState, useCallback, useMemo, useRef } from "react";
-import { ShieldAlert, Inbox, Search } from "lucide-react";
+import { useEffect, useState, useCallback, useMemo, useRef, useSyncExternalStore } from "react";
+import { ArrowDown, Inbox, Search, ShieldAlert, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Spinner } from "@/components/spinner";
@@ -18,6 +18,7 @@ import { loadFromStorage, saveToStorage } from "@/lib/local-storage";
 import { exportAsCsv, exportAsJson } from "@/lib/export";
 import type { ExpandMode, ColorMode } from "@/components/settings-dialog";
 import { parseQuery, matchQuery } from "@/lib/query-parser";
+import { cn } from "@/lib/utils";
 import type { SyslogEntry, Filters } from "@/types/syslog";
 import { emptyFilters } from "@/types/syslog";
 
@@ -32,7 +33,14 @@ const FW_TABLE_COLUMNS = [
   { label: "Details", width: "flex-1" },
 ];
 
+const subscribeToHydration = () => () => {};
+
 export default function Home() {
+  const hydrated = useSyncExternalStore(
+    subscribeToHydration,
+    () => true,
+    () => false
+  );
   const [viewMode, setViewMode] = useState<ViewMode>(() =>
     loadFromStorage<ViewMode>("viewMode", "all")
   );
@@ -50,8 +58,32 @@ export default function Home() {
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
   const [dbRules, setDbRules] = useState<string[]>([]);
   const [dbProtocols, setDbProtocols] = useState<string[]>([]);
+  const searchInputRef = useRef<HTMLInputElement>(null);
 
   const { theme, setTheme } = useTheme();
+
+  useEffect(() => {
+    const handleShortcut = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      const isEditing =
+        target?.tagName === "INPUT" ||
+        target?.tagName === "TEXTAREA" ||
+        target?.isContentEditable;
+
+      if (event.key === "/" && !isEditing) {
+        event.preventDefault();
+        searchInputRef.current?.focus();
+      }
+
+      if (event.key === "Escape" && document.activeElement === searchInputRef.current) {
+        setSearch("");
+        searchInputRef.current?.blur();
+      }
+    };
+
+    document.addEventListener("keydown", handleShortcut);
+    return () => document.removeEventListener("keydown", handleShortcut);
+  }, []);
 
   const {
     logs,
@@ -69,7 +101,7 @@ export default function Home() {
     totalInDb,
   } = useLogStream();
 
-  // Persist preferences
+  // Persist preferences after the client initializes state from storage.
   useEffect(() => saveToStorage("viewMode", viewMode), [viewMode]);
   useEffect(() => saveToStorage("filters", filters), [filters]);
   useEffect(() => saveToStorage("expandMode", expandMode), [expandMode]);
@@ -142,17 +174,11 @@ export default function Home() {
   // Firewall parsing + client-side filtering
   const firewallParsed = useMemo(() => {
     if (viewMode !== "firewall") return [];
-    // First filter to firewall logs only
-    const fwLogs = filteredLogs.filter(
-      (log) =>
-        log.message.includes("-A-") ||
-        log.message.includes("-D-") ||
-        log.message.includes("-R-")
-    );
-    let parsed = fwLogs.map((log) => ({
-      log,
-      fw: parseFirewallMessage(log.message)!,
-    }));
+    let parsed = filteredLogs.flatMap((log) => {
+      const fw =
+        parseFirewallMessage(log.message) || parseFirewallMessage(log.raw);
+      return fw ? [{ log, fw }] : [];
+    });
     if (filters.action)
       parsed = parsed.filter(({ fw }) => fw.action === filters.action);
     if (filters.proto)
@@ -184,6 +210,14 @@ export default function Home() {
           fw.descr.toLowerCase().includes(q)
       );
     }
+    if (filters.search) {
+      const q = filters.search.toLowerCase();
+      parsed = parsed.filter(
+        ({ log }) =>
+          log.message.toLowerCase().includes(q) ||
+          log.raw.toLowerCase().includes(q)
+      );
+    }
     return parsed;
   }, [filteredLogs, filters, viewMode]);
 
@@ -201,6 +235,7 @@ export default function Home() {
   const rowHeight = viewMode === "firewall" ? ROW_HEIGHT : LOG_ROW_HEIGHT;
 
   const prevItemCountRef = useRef(items.length);
+  const nearTopLoadTriggeredRef = useRef(false);
   const {
     scrollRef,
     handleScroll,
@@ -215,11 +250,19 @@ export default function Home() {
 
   // Load more when scrolling to top
   useEffect(() => {
-    if (isNearTop && hasMore && !isLoadingMore) {
-      const prevCount = items.length;
-      loadMore().then(() => {
-        // adjustScrollForPrepend will run after state update via the effect below
-      });
+    if (!isNearTop) {
+      nearTopLoadTriggeredRef.current = false;
+      return;
+    }
+
+    if (
+      items.length > 0 &&
+      hasMore &&
+      !isLoadingMore &&
+      !nearTopLoadTriggeredRef.current
+    ) {
+      nearTopLoadTriggeredRef.current = true;
+      void loadMore();
     }
   }, [isNearTop, hasMore, isLoadingMore, loadMore, items.length]);
 
@@ -280,7 +323,7 @@ export default function Home() {
     }));
   }, []);
 
-  const activeFilterCount = useMemo(() => {
+  const structuredFilterCount = useMemo(() => {
     let count = 0;
     if (viewMode === "firewall") {
       if (filters.action) count++;
@@ -290,14 +333,16 @@ export default function Home() {
       if (filters.dstIp) count++;
       if (filters.dstPort) count++;
       if (filters.rule) count++;
+      if (filters.search) count++;
     } else {
       if (allLogsFilters.severity) count++;
       if (allLogsFilters.host) count++;
       if (allLogsFilters.facility) count++;
     }
-    if (search) count++;
     return count;
-  }, [filters, allLogsFilters, viewMode, search]);
+  }, [filters, allLogsFilters, viewMode]);
+
+  const activeFilterCount = structuredFilterCount + (search.trim() ? 1 : 0);
 
   const handleExportCsv = useCallback(() => {
     const exportLogs =
@@ -337,8 +382,17 @@ export default function Home() {
       ? "Configure your syslog source to send firewall logs to this server."
       : "Configure your devices to send syslog to this server.";
 
+  if (!hydrated) {
+    return (
+      <div className="flex h-dvh items-center justify-center gap-2 bg-background text-sm text-muted-foreground">
+        <Spinner />
+        Loading log console...
+      </div>
+    );
+  }
+
   return (
-    <div className="flex flex-col h-screen bg-background text-foreground">
+    <div className="relative flex h-dvh flex-col bg-background/90 text-foreground">
       <Header
         connected={connected}
         isConnecting={streamState === "running" && !connected}
@@ -352,30 +406,69 @@ export default function Home() {
         onColorModeChange={setColorMode}
       />
 
-      {/* Search bar */}
-      <div className="px-4 py-2 bg-card/40 border-b border-border/50">
-        <div className="relative max-w-2xl">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 size-4 text-muted-foreground pointer-events-none" />
-          <Input
-            placeholder='Search: text, host=X, level=X, src=X, dst=X, proto=X OR/AND...'
-            value={search}
-            onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
-              setSearch(e.target.value)
-            }
-            className="h-9 pl-10 text-sm bg-muted/50 border-border/50 focus-visible:bg-background"
-            autoComplete="off"
-            data-1p-ignore
-            data-lpignore="true"
-          />
+      <section
+        className="shrink-0 border-b border-border/60 bg-card/65 px-3 py-3 backdrop-blur-md sm:px-4"
+        aria-label="Log search"
+      >
+        <div className="flex max-w-4xl items-center gap-2">
+          <div className="relative min-w-0 flex-1">
+            <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              ref={searchInputRef}
+              id="log-search"
+              aria-label="Search logs"
+              aria-describedby="search-help"
+              placeholder="Search messages, hosts, addresses, or protocols"
+              value={search}
+              onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+                setSearch(e.target.value)
+              }
+              className="pl-10 pr-10"
+              autoComplete="off"
+              data-1p-ignore
+              data-lpignore="true"
+            />
+            {!search && (
+              <kbd className="pointer-events-none absolute right-2 top-1/2 hidden -translate-y-1/2 rounded border border-border bg-muted px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground sm:inline-flex">
+                /
+              </kbd>
+            )}
+          </div>
+          {search && (
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={() => {
+                setSearch("");
+                searchInputRef.current?.focus();
+              }}
+              aria-label="Clear search"
+              title="Clear search"
+            >
+              <X />
+            </Button>
+          )}
         </div>
-      </div>
+        <div
+          id="search-help"
+          className="mt-2 flex max-w-4xl items-center gap-2 overflow-x-auto text-[11px] text-muted-foreground [scrollbar-width:none]"
+        >
+          <span className="shrink-0">Query tips</span>
+          <code className="shrink-0 rounded bg-muted px-1.5 py-0.5">host=Gateway</code>
+          <code className="shrink-0 rounded bg-muted px-1.5 py-0.5">level=error OR level=warning</code>
+          <code className="shrink-0 rounded bg-muted px-1.5 py-0.5">proto=TCP port=443</code>
+          <span className="ml-auto shrink-0 tabular-nums">
+            {items.length.toLocaleString()} shown · {logs.length.toLocaleString()} loaded
+          </span>
+        </div>
+      </section>
 
       <Toolbar
         viewMode={viewMode}
         streamState={streamState}
         bufferedCount={bufferedCount}
         filters={filters}
-        activeFilterCount={activeFilterCount}
+        activeFilterCount={structuredFilterCount}
         entryCount={items.length}
         allLogsFilters={allLogsFilters}
         onAllLogsFiltersChange={setAllLogsFilters}
@@ -399,11 +492,17 @@ export default function Home() {
       {/* Scrollable log area (horizontal + vertical) */}
       <div
         ref={scrollRef}
-        className="flex-1 overflow-auto min-h-0"
+        className="min-h-0 flex-1 overflow-auto"
         onScroll={handleScroll}
+        aria-label="Live syslog entries"
       >
         {/* Sticky column header — scrolls horizontally with content, pinned vertically */}
-        <div className="sticky top-0 z-10 flex bg-muted/80 backdrop-blur-sm text-muted-foreground text-[11px] uppercase font-mono font-medium tracking-wider border-b-2 border-border mx-2">
+        <div
+          className={cn(
+            "sticky top-0 z-10 mx-2 flex border-b border-border bg-muted/90 font-mono text-[10px] font-semibold uppercase tracking-[0.12em] text-muted-foreground backdrop-blur-md",
+            viewMode === "firewall" ? "min-w-[1280px]" : "min-w-[760px]"
+          )}
+        >
           {columns.map((col) => (
             <div key={col.label} className={`px-3 py-2.5 ${col.width} shrink-0`}>
               {col.label}
@@ -422,21 +521,47 @@ export default function Home() {
               <div className="flex flex-col items-center gap-3">
                 {emptyIcon}
                 <span>No matching entries</span>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={clearAllFilters}
-                >
-                  Clear filters
-                </Button>
+                <span className="text-xs text-muted-foreground/70">
+                  None of the {logs.length.toLocaleString()} loaded events match this view.
+                </span>
+                <div className="flex items-center gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={clearAllFilters}
+                  >
+                    Clear filters
+                  </Button>
+                  {hasMore && (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => void loadMore()}
+                      disabled={isLoadingMore}
+                    >
+                      {isLoadingMore ? "Loading..." : "Load 100 older"}
+                    </Button>
+                  )}
+                </div>
               </div>
             ) : (
               <div className="flex flex-col items-center gap-3">
                 {emptyIcon}
                 <span className="text-sm">{emptyText}</span>
                 <span className="text-xs text-muted-foreground/60">
-                  {emptyHint}
+                  {viewMode === "firewall" && logs.length > 0
+                    ? `${logs.length.toLocaleString()} loaded events are available in All logs, but none are firewall-formatted.`
+                    : emptyHint}
                 </span>
+                {viewMode === "firewall" && logs.length > 0 && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => handleViewModeChange("all")}
+                  >
+                    View all loaded events
+                  </Button>
+                )}
               </div>
             )}
           </div>
@@ -453,7 +578,10 @@ export default function Home() {
               </div>
             )}
             <div
-              className="mx-2"
+              className={cn(
+                "mx-2",
+                viewMode === "firewall" ? "min-w-[1280px]" : "min-w-[760px]"
+              )}
               style={{
                 position: "absolute",
                 top: virtualData.offsetTop,
@@ -495,6 +623,18 @@ export default function Home() {
           </div>
         )}
       </div>
+
+      {items.length > 0 && !isNearBottom && (
+        <Button
+          variant="secondary"
+          size="sm"
+          className="absolute bottom-14 right-4 z-20 shadow-lg"
+          onClick={scrollToBottom}
+        >
+          <ArrowDown data-icon="inline-start" />
+          Jump to latest
+        </Button>
+      )}
 
       <StatusFooter
         totalCount={totalInDb}

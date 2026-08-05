@@ -85,7 +85,7 @@ function AllLogsFilterDialog({
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogTrigger render={<Button variant="outline" size="sm" />}>
-        <Filter className="size-4" />
+        <Filter data-icon="inline-start" />
         Filters
         {activeCount > 0 && (
           <Badge variant="secondary" className="ml-1 h-4 text-[10px] px-1.5">
@@ -191,8 +191,10 @@ function AllLogsFilterBadges({
         <Badge key={key} variant="outline" className="gap-1 pr-1">
           {label}
           <button
+            type="button"
             onClick={() => onRemove(key)}
             className="ml-0.5 rounded-full hover:bg-muted p-0.5"
+            aria-label={`Remove ${label} filter`}
           >
             <X className="size-3" />
           </button>
@@ -256,114 +258,81 @@ export function Toolbar({
   ruleOptions: string[];
   protocolOptions: string[];
 }) {
+  const allLogsFilterCount =
+    (allLogsFilters.severity ? 1 : 0) +
+    (allLogsFilters.host ? 1 : 0) +
+    (allLogsFilters.facility ? 1 : 0);
+  const visibleFilterCount =
+    viewMode === "all" ? allLogsFilterCount : activeFilterCount;
+
   return (
-    <div className="flex items-center gap-2 px-4 py-1.5 bg-card/40 border-b border-border/50 flex-wrap">
-      {/* View mode toggle */}
-      <div className="flex rounded-md border border-input overflow-hidden text-xs font-medium">
-        <button
-          type="button"
-          className={`inline-flex items-center gap-1.5 px-3 py-1.5 transition-colors ${
-            viewMode === "all"
-              ? "bg-primary text-primary-foreground"
-              : "bg-transparent text-muted-foreground hover:text-foreground"
-          }`}
-          onClick={() => onViewModeChange("all")}
-        >
-          <List className="size-3" />
-          All Logs
-        </button>
-        <button
-          type="button"
-          className={`inline-flex items-center gap-1.5 px-3 py-1.5 transition-colors border-l border-input ${
-            viewMode === "firewall"
-              ? "bg-primary text-primary-foreground"
-              : "bg-transparent text-muted-foreground hover:text-foreground"
-          }`}
-          onClick={() => onViewModeChange("firewall")}
-        >
-          <Shield className="size-3" />
-          Firewall
-        </button>
-      </div>
-
-      <Separator orientation="vertical" className="h-5 mx-1" />
-
-      {/* Stream controls */}
-      <div className="flex items-center gap-1">
-        {streamState === "running" ? (
+    <div className="shrink-0 border-b border-border/60 bg-card/45">
+      <div className="flex items-center gap-2 overflow-x-auto px-3 py-2 [scrollbar-width:none] sm:px-4">
+        <div className="flex shrink-0 items-center rounded-lg bg-muted p-0.5" role="group" aria-label="Log view">
           <Button
-            variant="outline"
-            size="xs"
-            onClick={onPause}
-            title="Pause stream"
-            className="gap-1.5"
+            variant={viewMode === "all" ? "secondary" : "ghost"}
+            size="sm"
+            aria-pressed={viewMode === "all"}
+            onClick={() => onViewModeChange("all")}
           >
-            <Pause className="size-3" />
-            Pause
+            <List data-icon="inline-start" />
+            All logs
           </Button>
-        ) : streamState === "paused" ? (
           <Button
-            size="xs"
-            onClick={onResume}
-            className="bg-emerald-700 hover:bg-emerald-600 text-white border-emerald-700 gap-1.5"
-            title="Resume stream"
+            variant={viewMode === "firewall" ? "secondary" : "ghost"}
+            size="sm"
+            aria-pressed={viewMode === "firewall"}
+            onClick={() => onViewModeChange("firewall")}
           >
-            <Play className="size-3" />
-            Resume
-            {bufferedCount > 0 && (
-              <Badge
-                variant="secondary"
-                className="ml-0.5 h-4 text-[10px] px-1.5 bg-white/20 text-white"
-              >
-                {bufferedCount}
-              </Badge>
-            )}
+            <Shield data-icon="inline-start" />
+            Firewall
           </Button>
-        ) : (
-          <Button
-            size="xs"
-            onClick={onStart}
-            className="bg-emerald-700 hover:bg-emerald-600 text-white border-emerald-700 gap-1.5"
-            title="Start stream"
-          >
-            <Play className="size-3" />
-            Start
-          </Button>
-        )}
-        {streamState !== "stopped" && (
-          <Button
-            variant="outline"
-            size="xs"
-            onClick={onStop}
-            title="Stop stream"
-            className="gap-1.5 text-destructive hover:text-destructive"
-          >
-            <Square className="size-3" />
-          </Button>
-        )}
-      </div>
+        </div>
 
-      <Separator orientation="vertical" className="h-5 mx-1" />
+        <Separator orientation="vertical" className="mx-1 h-5 shrink-0" />
 
-      {/* All logs filters */}
-      {viewMode === "all" && (
-        <>
+        <div className="flex shrink-0 items-center gap-1">
+          {streamState === "running" ? (
+            <Button variant="outline" size="sm" onClick={onPause} title="Pause stream">
+              <Pause data-icon="inline-start" />
+              Pause
+            </Button>
+          ) : streamState === "paused" ? (
+            <Button size="sm" onClick={onResume} title="Resume stream">
+              <Play data-icon="inline-start" />
+              Resume
+              {bufferedCount > 0 && (
+                <Badge variant="secondary">{bufferedCount}</Badge>
+              )}
+            </Button>
+          ) : (
+            <Button size="sm" onClick={onStart} title="Start stream">
+              <Play data-icon="inline-start" />
+              Start
+            </Button>
+          )}
+          {streamState !== "stopped" && (
+            <Button
+              variant="destructive"
+              size="icon-sm"
+              onClick={onStop}
+              title="Stop stream"
+              aria-label="Stop stream"
+            >
+              <Square />
+            </Button>
+          )}
+        </div>
+
+        <Separator orientation="vertical" className="mx-1 h-5 shrink-0" />
+
+        {viewMode === "all" ? (
           <AllLogsFilterDialog
             filters={allLogsFilters}
             onChange={onAllLogsFiltersChange}
             onClear={onClearAllLogsFilters}
           />
-          <AllLogsFilterBadges
-            filters={allLogsFilters}
-            onRemove={onRemoveAllLogsFilter}
-            onClearAll={onClearAllLogsFilters}
-          />
-        </>
-      )}
-
-      {/* Firewall filters */}
-      {viewMode === "firewall" && (
-        <>
+        ) : (
           <FilterDialog
             filters={filters}
             onChange={onFiltersChange}
@@ -373,46 +342,44 @@ export function Toolbar({
             protocolOptions={protocolOptions}
             onDeleteFiltered={onDeleteFiltered}
           />
-          <FilterBadges
-            filters={filters}
-            onRemove={onRemoveFilter}
-            onClearAll={onClearFilters}
-            activeCount={activeFilterCount}
-          />
-        </>
-      )}
+        )}
 
-      <div className="ml-auto flex items-center gap-3">
-        <span
-          className="text-xs text-muted-foreground tabular-nums"
-          suppressHydrationWarning
-        >
-          {entryCount.toLocaleString()} entries
-        </span>
-
-        <div className="flex items-center">
-          <Button
-            variant="ghost"
-            size="xs"
-            onClick={onExportCsv}
-            title="Export as CSV"
-            className="gap-1"
-          >
-            <Download className="size-3" />
+        <div className="ml-auto flex shrink-0 items-center gap-2">
+          <span className="font-mono text-[11px] tabular-nums text-muted-foreground" suppressHydrationWarning>
+            {entryCount.toLocaleString()} shown
+          </span>
+          <Button variant="ghost" size="sm" onClick={onExportCsv} title="Export as CSV">
+            <Download data-icon="inline-start" />
             CSV
           </Button>
-          <Button
-            variant="ghost"
-            size="xs"
-            onClick={onExportJson}
-            title="Export as JSON"
-            className="gap-1"
-          >
-            <Download className="size-3" />
+          <Button variant="ghost" size="sm" onClick={onExportJson} title="Export as JSON">
+            <Download data-icon="inline-start" />
             JSON
           </Button>
         </div>
       </div>
+
+      {visibleFilterCount > 0 && (
+        <div className="flex items-center gap-2 overflow-x-auto border-t border-border/40 px-3 py-1.5 [scrollbar-width:none] sm:px-4">
+          <span className="shrink-0 font-mono text-[10px] uppercase tracking-wider text-muted-foreground">
+            Active
+          </span>
+          {viewMode === "all" ? (
+            <AllLogsFilterBadges
+              filters={allLogsFilters}
+              onRemove={onRemoveAllLogsFilter}
+              onClearAll={onClearAllLogsFilters}
+            />
+          ) : (
+            <FilterBadges
+              filters={filters}
+              onRemove={onRemoveFilter}
+              onClearAll={onClearFilters}
+              activeCount={activeFilterCount}
+            />
+          )}
+        </div>
+      )}
     </div>
   );
 }

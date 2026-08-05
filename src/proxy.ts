@@ -3,7 +3,7 @@ import { NextRequest, NextResponse } from "next/server";
 const AUTH_PASSWORD = process.env.SYSLOG_AUTH_PASSWORD || "";
 const COOKIE_NAME = "syslog-auth";
 
-export function middleware(request: NextRequest) {
+export function proxy(request: NextRequest) {
   if (!AUTH_PASSWORD) return NextResponse.next();
 
   const { pathname } = request.nextUrl;
@@ -33,7 +33,7 @@ export function middleware(request: NextRequest) {
 }
 
 function hashPassword(password: string): string {
-  // Simple hash for cookie comparison — not for storage
+  // Simple hash for cookie comparison - not for storage
   let hash = 0;
   for (let i = 0; i < password.length; i++) {
     const char = password.charCodeAt(i);

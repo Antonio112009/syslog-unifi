@@ -3,7 +3,6 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 // We test the CSV/JSON generation logic by capturing what Blob receives
 let lastBlobContent = "";
 let lastBlobType = "";
-let lastDownloadName = "";
 
 const mockElement = {
   href: "",
@@ -70,7 +69,6 @@ const sampleLogs = [
 beforeEach(() => {
   lastBlobContent = "";
   lastBlobType = "";
-  lastDownloadName = "";
 });
 
 describe("exportAsJson", () => {

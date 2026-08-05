@@ -82,7 +82,7 @@ export function ingestSyslogMessage(msg: SyslogMessage): number {
     key: "",
   };
 
-  const fw = extractFirewallFields(msg.message);
+  const fw = extractFirewallFields(msg.message, msg.raw);
   const insert = getInsertStmt();
 
   const result = insert.run(
@@ -279,8 +279,11 @@ export function getDistinctRules(): string[] {
 
 export function clearLogs(): void {
   _rulesCache = null;
+  _protosCache = null;
   const db = getDb();
   db.exec("DELETE FROM logs");
+  db.pragma("wal_checkpoint(TRUNCATE)");
+  db.exec("VACUUM");
 }
 
 /** Delete logs matching the given filter criteria. Returns number of deleted rows. */

@@ -1,7 +1,6 @@
 "use client";
 
-import { useState } from "react";
-import { Copy, Check } from "lucide-react";
+import { LogDetails } from "@/components/log-details";
 import type { SyslogEntry } from "@/types/syslog";
 
 export const LOG_ROW_HEIGHT = 36;
@@ -48,15 +47,6 @@ export function LogRow({
   colorMode?: "badge" | "row";
   index?: number;
 }) {
-  const [copied, setCopied] = useState(false);
-
-  const handleCopy = (e: React.MouseEvent) => {
-    e.stopPropagation();
-    navigator.clipboard.writeText(log.raw);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 1500);
-  };
-
   const ts = showDate
     ? log.timestamp.replace("T", " ").slice(0, 19)
     : log.timestamp.slice(11, 19);
@@ -70,11 +60,23 @@ export function LogRow({
 
   return (
     <div
-      className="group border-b border-border/30 hover:bg-muted/40 cursor-pointer font-mono text-[13px] font-medium transition-colors"
+      className="group border-b border-border/30 font-mono text-[13px] font-medium"
       style={{ minHeight: LOG_ROW_HEIGHT, backgroundColor: rowBg }}
-      onClick={onToggle}
     >
-      <div className="flex items-start">
+      <div
+        className="flex cursor-pointer items-start transition-colors hover:bg-muted/45 focus-visible:bg-muted/45 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+        role="button"
+        tabIndex={0}
+        aria-expanded={isExpanded}
+        aria-label={`${isExpanded ? "Collapse" : "Inspect"} ${log.severity} log from ${log.host}`}
+        onClick={onToggle}
+        onKeyDown={(event) => {
+          if (event.key === "Enter" || event.key === " ") {
+            event.preventDefault();
+            onToggle();
+          }
+        }}
+      >
         <div className="px-3 py-2 text-muted-foreground/70 whitespace-nowrap w-[180px] shrink-0 tabular-nums">
           {ts}
         </div>
@@ -103,24 +105,7 @@ export function LogRow({
           </span>
         </div>
       </div>
-      {isExpanded && (
-        <div className="px-4 pb-3 space-y-2">
-          <pre className="whitespace-pre-wrap break-all text-xs text-muted-foreground/70 leading-relaxed">
-            {log.raw}
-          </pre>
-          <button
-            onClick={handleCopy}
-            className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors px-2 py-1 rounded border border-border/50 hover:bg-muted/50"
-          >
-            {copied ? (
-              <Check className="size-3 text-emerald-400" />
-            ) : (
-              <Copy className="size-3" />
-            )}
-            {copied ? "Copied" : "Copy raw"}
-          </button>
-        </div>
-      )}
+      {isExpanded && <LogDetails log={log} />}
     </div>
   );
 }

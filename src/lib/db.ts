@@ -1,6 +1,7 @@
 import Database from "better-sqlite3";
 import path from "path";
 import fs from "fs";
+import { parseFirewallMessage } from "./firewall-parser";
 
 const DATA_DIR = path.join(process.cwd(), "data");
 const DB_PATH = path.join(DATA_DIR, "syslogs.db");
@@ -18,47 +19,40 @@ export interface FirewallFields {
   fw_rule_descr: string;
 }
 
-const FW_KV_RE: Record<string, RegExp> = {
-  PROTO: /PROTO=(\S*)/,
-  SRC: /SRC=(\S*)/,
-  DST: /DST=(\S*)/,
-  SPT: /SPT=(\S*)/,
-  DPT: /DPT=(\S*)/,
-};
-
 /** Extract firewall fields from a syslog message. Returns empty strings for non-firewall messages. */
-export function extractFirewallFields(message: string): FirewallFields {
+export function extractFirewallFields(message: string, raw = ""): FirewallFields {
   const empty: FirewallFields = { fw_action: "", fw_proto: "", fw_src: "", fw_dst: "", fw_spt: "", fw_dpt: "", fw_rule: "", fw_rule_descr: "" };
-  const ruleMatch = message.match(/\[([^\]]+)\]/);
-  if (!ruleMatch) return empty;
-  const ruleRaw = ruleMatch[1];
-  const actionCode = ruleRaw.match(/-([ADR])-/)?.[1] || "";
-  if (!actionCode) return empty;
-  const actionMap: Record<string, string> = { A: "Allow", D: "Drop", R: "Reject" };
-  const descrMatch = message.match(/DESCR="([^"]*)"/);
+  const parsed = parseFirewallMessage(message) || (raw ? parseFirewallMessage(raw) : null);
+  if (!parsed) return empty;
+
   return {
-    fw_action: actionMap[actionCode] || "",
-    fw_proto: message.match(FW_KV_RE.PROTO)?.[1] || "",
-    fw_src: message.match(FW_KV_RE.SRC)?.[1] || "",
-    fw_dst: message.match(FW_KV_RE.DST)?.[1] || "",
-    fw_spt: message.match(FW_KV_RE.SPT)?.[1] || "",
-    fw_dpt: message.match(FW_KV_RE.DPT)?.[1] || "",
-    fw_rule: ruleRaw,
-    fw_rule_descr: descrMatch?.[1]?.replace(/^\[[^\]]*\]/, "") || "",
+    fw_action: parsed.action,
+    fw_proto: parsed.proto,
+    fw_src: parsed.src,
+    fw_dst: parsed.dst,
+    fw_spt: parsed.spt,
+    fw_dpt: parsed.dpt,
+    fw_rule: parsed.rule,
+    fw_rule_descr: parsed.descr,
   };
 }
 
 function backfillFirewallColumns(db: Database.Database): void {
   const rows = db.prepare(
-    `SELECT rowid, message FROM logs WHERE fw_action = '' AND (message LIKE '[%-A-%]%' OR message LIKE '[%-D-%]%' OR message LIKE '[%-R-%]%')`
-  ).all() as { rowid: number; message: string }[];
+    `SELECT rowid, message, raw FROM logs
+     WHERE fw_action = '' AND (
+       message LIKE '[%-A-%]%' OR message LIKE '[%-D-%]%' OR message LIKE '[%-R-%]%'
+       OR ((message LIKE '%CEF:%' OR raw LIKE '%CEF:%') AND (message LIKE '% act=%' OR raw LIKE '% act=%'))
+     )`
+  ).all() as { rowid: number; message: string; raw: string }[];
   if (rows.length === 0) return;
   const update = db.prepare(
     `UPDATE logs SET fw_action=?, fw_proto=?, fw_src=?, fw_dst=?, fw_spt=?, fw_dpt=?, fw_rule=?, fw_rule_descr=? WHERE rowid=?`
   );
   const tx = db.transaction(() => {
     for (const row of rows) {
-      const fw = extractFirewallFields(row.message);
+      const fw = extractFirewallFields(row.message, row.raw);
+      if (!fw.fw_action) continue;
       update.run(fw.fw_action, fw.fw_proto, fw.fw_src, fw.fw_dst, fw.fw_spt, fw.fw_dpt, fw.fw_rule, fw.fw_rule_descr, row.rowid);
     }
   });
@@ -140,8 +134,6 @@ export function getDb(): Database.Database {
       CREATE INDEX IF NOT EXISTS idx_logs_fw_proto ON logs(fw_proto) WHERE fw_proto != '';
       CREATE INDEX IF NOT EXISTS idx_logs_fw_rule ON logs(fw_rule) WHERE fw_rule != '';
     `);
-    // Backfill existing rows
-    backfillFirewallColumns(db);
   }
 
   // Create firewall indexes (after migration ensures columns exist)
@@ -150,6 +142,9 @@ export function getDb(): Database.Database {
     CREATE INDEX IF NOT EXISTS idx_logs_fw_proto ON logs(fw_proto) WHERE fw_proto != '';
     CREATE INDEX IF NOT EXISTS idx_logs_fw_rule ON logs(fw_rule) WHERE fw_rule != '';
   `);
+
+  // Backfill newly supported firewall formats without touching existing rows.
+  backfillFirewallColumns(db);
 
   _db = db;
   return db;

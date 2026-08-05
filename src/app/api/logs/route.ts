@@ -3,13 +3,21 @@ import { getLogs, getRecentLogs, clearLogs, deleteFilteredLogs, subscribe, loadL
 import type { FilterOptions } from "@/lib/log-store";
 import { startSyslogServer, onSyslogMessage } from "@/lib/syslog-server";
 
-loadLogs();
-startSyslogServer();
-onSyslogMessage((msg) => {
-  ingestSyslogMessage(msg);
-});
+const syslogRuntime = globalThis as typeof globalThis & {
+  __syslogRuntimeInitialized?: boolean;
+};
+
+function ensureSyslogRuntime() {
+  if (syslogRuntime.__syslogRuntimeInitialized) return;
+  syslogRuntime.__syslogRuntimeInitialized = true;
+
+  loadLogs();
+  onSyslogMessage(ingestSyslogMessage);
+  startSyslogServer();
+}
 
 export async function GET(request: NextRequest) {
+  ensureSyslogRuntime();
   const { searchParams } = request.nextUrl;
   const stream = searchParams.get("stream") === "true";
   const severity = searchParams.get("severity") || undefined;
@@ -89,6 +97,7 @@ export async function GET(request: NextRequest) {
 }
 
 export async function DELETE(request: NextRequest) {
+  ensureSyslogRuntime();
   const { searchParams } = request.nextUrl;
   const hasFilters = ["action", "proto", "srcIp", "srcPort", "dstIp", "dstPort", "rule"].some(
     (k) => searchParams.has(k)
