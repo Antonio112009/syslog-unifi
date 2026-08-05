@@ -1,6 +1,8 @@
 "use client";
 
+import { useMemo } from "react";
 import { LogDetails } from "@/components/log-details";
+import { parseCefMessage } from "@/lib/firewall-parser";
 import type { SyslogEntry } from "@/types/syslog";
 
 export const LOG_ROW_HEIGHT = 36;
@@ -50,6 +52,13 @@ export function LogRow({
   const ts = showDate
     ? log.timestamp.replace("T", " ").slice(0, 19)
     : log.timestamp.slice(11, 19);
+  const cef = useMemo(
+    () => parseCefMessage(log.raw) || parseCefMessage(log.message),
+    [log.message, log.raw]
+  );
+  const displayMessage = cef
+    ? [cef.eventName, cef.fields.msg].filter(Boolean).join(" · ")
+    : log.message;
 
   const badgeClass = SEVERITY_BADGE_STYLES[log.severity] || DEFAULT_BADGE;
   const rowBg = colorMode === "row"
@@ -101,7 +110,7 @@ export function LogRow({
         </div>
         <div className="px-3 py-2 flex-1 min-w-0 overflow-hidden">
           <span className="truncate block text-foreground/80 group-hover:text-foreground/90 transition-colors">
-            {log.message}
+            {displayMessage}
           </span>
         </div>
       </div>

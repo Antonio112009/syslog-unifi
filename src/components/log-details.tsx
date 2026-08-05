@@ -43,6 +43,32 @@ function DetailItem({
   );
 }
 
+function FlowNode({
+  label,
+  value,
+  meta,
+}: {
+  label: string;
+  value: string;
+  meta?: string;
+}) {
+  return (
+    <div className="min-w-0 rounded-lg border border-border/70 bg-background/65 px-3 py-2.5">
+      <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">
+        {label}
+      </p>
+      <p className="mt-1 truncate font-mono text-xs font-semibold text-foreground" title={value}>
+        {value || "Not reported"}
+      </p>
+      {meta && (
+        <p className="mt-1 truncate text-[11px] text-muted-foreground" title={meta}>
+          {meta}
+        </p>
+      )}
+    </div>
+  );
+}
+
 export function LogDetails({
   log,
   firewall,
@@ -77,6 +103,14 @@ export function LogDetails({
   const hasNetworkDetails = Boolean(
     firewall || fields.src || fields.dst || fields.proto || fields.act
   );
+  const metadata = [
+    ["Policy", policy],
+    ["Signature / rule", signature],
+    ["Direction", direction],
+    ["Inbound interface", inboundInterface],
+    ["Outbound interface", outboundInterface],
+    ["CEF severity", cef?.severity || ""],
+  ].filter((item): item is [string, string] => Boolean(item[1]));
 
   const handleCopy = async () => {
     await navigator.clipboard.writeText(log.raw);
@@ -85,9 +119,9 @@ export function LogDetails({
   };
 
   return (
-    <section className="mx-3 mb-3 overflow-hidden rounded-xl border border-border/70 bg-card/90 font-sans shadow-sm">
-      <header className="flex flex-wrap items-start gap-3 px-3 py-3">
-        <div className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-muted text-muted-foreground">
+    <section className="mx-3 mb-3 overflow-hidden rounded-xl border border-border/70 bg-card/95 font-sans shadow-[0_12px_32px_-24px_rgba(0,0,0,0.8)]">
+      <header className="flex flex-wrap items-start gap-3 border-l-2 border-l-primary/70 px-3 py-3">
+        <div className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
           {hasNetworkDetails ? (
             <ShieldAlert className="size-4" />
           ) : (
@@ -125,39 +159,47 @@ export function LogDetails({
       </header>
 
       {hasNetworkDetails && (
-        <dl className="grid gap-px border-t border-border/60 bg-border/50 sm:grid-cols-2 xl:grid-cols-4">
-          <DetailItem label="Source" value={source} />
-          <DetailItem label="Destination" value={destination} />
-          <DetailItem
-            label="Traffic"
-            value={[protocol, application].filter(Boolean).join(" · ")}
-          />
-          <DetailItem
-            label="Path"
-            value={
-              [direction, inboundInterface, outboundInterface]
-                .filter(Boolean)
-                .join(" · ")
-            }
-          />
-        </dl>
+        <div className="border-t border-border/60 bg-muted/15 p-3">
+          <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto_minmax(7rem,0.65fr)_auto_minmax(0,1fr)] sm:items-center">
+            <FlowNode
+              label="Source"
+              value={source}
+              meta={fields.UNIFIsrcZone ? `${fields.UNIFIsrcZone} zone` : undefined}
+            />
+            <ArrowRight className="mx-auto size-4 rotate-90 text-muted-foreground/60 sm:rotate-0" />
+            <FlowNode
+              label="Traffic"
+              value={protocol || "Unknown"}
+              meta={application || undefined}
+            />
+            <ArrowRight className="mx-auto size-4 rotate-90 text-muted-foreground/60 sm:rotate-0" />
+            <FlowNode
+              label="Destination"
+              value={destination}
+              meta={fields.UNIFIdstZone ? `${fields.UNIFIdstZone} zone` : undefined}
+            />
+          </div>
+        </div>
       )}
 
-      {(policy || signature) && (
-        <dl className="grid gap-px border-t border-border/60 bg-border/50 sm:grid-cols-2">
-          <DetailItem label="Policy" value={policy} />
-          <DetailItem label="Signature / rule" value={signature} />
+      {metadata.length > 0 && (
+        <dl className="grid gap-px border-t border-border/60 bg-border/50 sm:grid-cols-2 xl:grid-cols-3">
+          {metadata.map(([label, value]) => (
+            <DetailItem key={label} label={label} value={value} />
+          ))}
         </dl>
       )}
 
       {message && (
         <div className="border-t border-border/60 px-3 py-3">
-          <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">
-            Message
-          </p>
-          <p className="mt-1.5 text-sm leading-relaxed text-foreground/85">
-            {message}
-          </p>
+          <div className="rounded-lg border border-primary/15 bg-primary/[0.04] px-3 py-2.5">
+            <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">
+              Event summary
+            </p>
+            <p className="mt-1.5 text-sm leading-relaxed text-foreground/85">
+              {message}
+            </p>
+          </div>
         </div>
       )}
 

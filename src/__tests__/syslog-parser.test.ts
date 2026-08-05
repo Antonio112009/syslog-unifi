@@ -27,6 +27,18 @@ describe("parseSyslogMessage", () => {
     expect(result.timestamp).toBe("2024-01-05T14:30:00Z");
   });
 
+  it("normalizes RFC 3164-wrapped UniFi CEF events", () => {
+    const raw = `<134>Aug  6 00:22:02 HH-Gateway CEF:0|Ubiquiti|UniFi Network|10.5.67|201|Threat Detected and Blocked|7|proto=TCP act=blocked src=192.168.2.3 dst=192.168.30.29 msg=A network intrusion attempt has been detected and blocked.`;
+    const result = parseSyslogMessage(raw, "10.0.0.1");
+
+    expect(result.host).toBe("HH-Gateway");
+    expect(result.facility).toBe("UniFi Network");
+    expect(result.severity).toBe("error");
+    expect(result.message).toBe(
+      "A network intrusion attempt has been detected and blocked."
+    );
+  });
+
   it("handles simple fallback format", () => {
     const raw = `<13>myhost Some random message`;
     const result = parseSyslogMessage(raw, "10.0.0.1");

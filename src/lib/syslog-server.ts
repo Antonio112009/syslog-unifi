@@ -1,5 +1,6 @@
 import dgram from "dgram";
 import net from "net";
+import { parseCefMessage, type ParsedCefEvent } from "./firewall-parser";
 
 // Re-export for use by log-store
 export interface SyslogMessage {
@@ -39,6 +40,15 @@ const FACILITIES = [
 const SEVERITIES = [
   "emergency", "alert", "critical", "error", "warning", "notice", "info", "debug",
 ];
+
+function cefSeverity(cef: ParsedCefEvent, fallback: string) {
+  const value = Number.parseInt(cef.severity, 10);
+  if (Number.isNaN(value)) return fallback;
+  if (value <= 3) return "info";
+  if (value <= 6) return "warning";
+  if (value <= 8) return "error";
+  return "critical";
+}
 
 export function parseSyslogMessage(raw: string, remoteAddress: string): SyslogMessage {
   // RFC 3164: <PRI>TIMESTAMP HOSTNAME MSG
@@ -80,23 +90,11 @@ export function parseSyslogMessage(raw: string, remoteAddress: string): SyslogMe
   if (cefMatch) {
     timestamp = cefMatch[2]; // Use the ISO timestamp
     host = cefMatch[3]; // Device name (can have spaces)
-    const cefBody = cefMatch[4];
-    // Parse CEF: version|vendor|product|productVersion|eventId|name|severity|extensions
-    const cefParts = cefBody.split("|");
-    const cefName = cefParts.length > 5 ? cefParts[5] : "";
-    const cefSeverityNum = cefParts.length > 6 ? parseInt(cefParts[6], 10) : 5;
-    // Map CEF severity (0-10) to syslog severity
-    if (cefSeverityNum <= 3) severity = "info";
-    else if (cefSeverityNum <= 6) severity = "warning";
-    else if (cefSeverityNum <= 8) severity = "error";
-    else severity = "critical";
-    // Extract msg= from extensions
-    const extensions = cefParts.length > 7 ? cefParts.slice(7).join("|") : "";
-    const msgMatch = extensions.match(/\bmsg=(.+?)(?:\s+\w+=|$)/s);
-    message = msgMatch ? msgMatch[1].trim() : cefName || cefBody;
-    // Extract subsystem from product
-    if (cefParts.length > 2) {
-      facility = cefParts[2]; // e.g. "UniFi OS"
+    const cef = parseCefMessage(`CEF:${cefMatch[4]}`);
+    if (cef) {
+      severity = cefSeverity(cef, severity);
+      message = cef.fields.msg || cef.eventName || message;
+      facility = cef.product || facility;
     }
     return { facility, severity, host, message, timestamp, raw: trimmed };
   }
@@ -113,6 +111,12 @@ export function parseSyslogMessage(raw: string, remoteAddress: string): SyslogMe
     }
     host = rfc3164Match[2];
     message = rfc3164Match[3];
+    const cef = parseCefMessage(message);
+    if (cef) {
+      severity = cefSeverity(cef, severity);
+      facility = cef.product || facility;
+      message = cef.fields.msg || cef.eventName || message;
+    }
     return { facility, severity, host, message: message.trim(), timestamp, raw: trimmed };
   }
 
